@@ -4,8 +4,7 @@
 # jeff hardy (hardyjm at potsdam dot edu)
 # qmail-skim.pl is designed to skim through mails looking for problems before re-injecting them
 #
-# easy to use with the qmailqueue patch
-# for instance in tcp.smtp
+# example tcp.smtp on qmail with qmailqueue patch:
 # 127.:allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl",QMAILSKIMCONF="/etc/qmail-skim-test.conf"
 # :allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl"
 
@@ -32,15 +31,15 @@ my $envelope = get_envelope();
 # find our config
 my $conf;
 if ($ENV{QMAILSKIMCONF} && -e $ENV{QMAILSKIMCONF}) {
-	warn "$logtag: reading configuration $ENV{QMAILSKIMCONF}\n";
+	warn "$logtag: Reading configuration $ENV{QMAILSKIMCONF}\n";
 	$conf = Config::IniFiles->new( -file => $ENV{QMAILSKIMCONF}, -nocase => 1 );
 	warn "@Config::IniFiles::errors\n" if @Config::IniFiles::errors;
 } elsif (-e '/etc/qmail-skim.conf') {
-	warn "$logtag: reading configuration /etc/qmail-skim.conf\n";
+	warn "$logtag: Reading configuration /etc/qmail-skim.conf\n";
 	$conf = Config::IniFiles->new( -file => '/etc/qmail-skim.conf', -nocase => 1 );
 	warn "@Config::IniFiles::errors\n" if @Config::IniFiles::errors;
 } else {
-	warn "$logtag: No configuration found, re-queuing with no checks\n";
+	warn "$logtag: No configuration found and no checks conducted\n";
 	qmail_queue($envelope,$message);
 	exit;
 }
@@ -52,19 +51,17 @@ my %checks_dryrun; foreach (split(/,/,$conf->val('global','dryrun'))) { $checks_
 main: {
 	# breakdown the message
 	my $email = Email::Simple->new($message);
-	my %headers = $email->header_pairs();
+	my @headers = $email->header_names();
 	my $body = $email->body();
 	
 	# breakdown the envelope
 	my ($mailfrom,$rcptto) = parse_envelope($envelope);
 	
 	# debug
-	if ($verbose > 1) {
-		debug(\%headers);
-	}
+	debug($email,\@headers) if $conf->val('global','debug');
 	
-	warn "$logtag: authuser: ".$ENV{SMTP_AUTH_USER}."\n";
-	warn "$logtag: mailfrom: $mailfrom\n";
+	#warn "$logtag: authuser: ".$ENV{SMTP_AUTH_USER}."\n";
+	#warn "$logtag: mailfrom: $mailfrom\n";
 	#warn "$logtag: rcpttos: $rcptto\n";
 	#warn "$logtag: from: ".$email->header("From")."\n";
 	
@@ -72,7 +69,7 @@ main: {
 	check_phishhook($ENV{SMTP_AUTH_USER}) if $checks_enabled{phishhook};
 	check_phishfrom($mailfrom,$rcptto,$email->header("from")) if $checks_enabled{phishfrom};
 	check_envelope($mailfrom,$rcptto) if ($checks_enabled{envelope});
-	check_headers(\%headers) if ($checks_enabled{headers});
+	check_headers($email,\@headers) if ($checks_enabled{headers});
 	check_body($body) if ($checks_enabled{body});
 	
 	# queue it up
@@ -94,13 +91,13 @@ sub bail {
 sub check_body {
 	my ($body) = @_;
 	my @b_checks = $conf->val('body','body');
-	warn "$logtag: checking body\n" if $verbose;
+	warn "$logtag: Check body\n" if $verbose;
 	foreach my $bchk (@b_checks) {		# iterate over checks
 		$bchk =~ s/^\~//;
-		warn "$logtag:\t$bchk\n" if $verbose > 1;
+		warn "$logtag: ...body =~ $bchk\n" if $verbose > 1;
 		if ($body =~ m/$bchk/) {
 			if ($checks_dryrun{body}) {
-				warn "$logtag: DRYRUN BLOCK body =~ $bchk (#5.3.0)\n";
+				warn "$logtag: BLOCK DRYRUN body =~ $bchk (#5.3.0)\n";
 			} else {
 				bail("$logtag: BLOCK body =~ $bchk (#5.3.0)\n",111);
 			}
@@ -113,13 +110,13 @@ sub check_envelope {
 	my ($mailfrom,$rcptto) = @_;
 	# mailfrom
 	my @mf_checks = $conf->val('envelope','mailfrom');
-	warn "$logtag: checking envelope mailfrom $mailfrom\n" if $verbose;
+	warn "$logtag: Check envelope: mailfrom $mailfrom\n" if $verbose;
 	foreach my $mfchk (@mf_checks) {
-		warn "$logtag:\t$mfchk\n" if $verbose > 1;
+		warn "$logtag: ...$mfchk\n" if $verbose > 1;
 		if ($mfchk =~ s/^\~//) {
 			if ($mailfrom =~ m/$mfchk/) {
 				if ($checks_dryrun{envelope}) {
-					warn "$logtag: DRYRUN BLOCK envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n";	
+					warn "$logtag: BLOCK DRYRUN envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n";	
 				} else {
 					bail("$logtag: BLOCK envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n",111);
 				}
@@ -128,7 +125,7 @@ sub check_envelope {
 		else {
 			if ($mailfrom eq $mfchk) {
 				if ($checks_dryrun{envelope}) {
-					warn "$logtag: DRYRUN BLOCK envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n";
+					warn "$logtag: BLOCK DRYRUN envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n";
 				} else {
 					bail("$logtag: BLOCK envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n",111);
 				}
@@ -143,51 +140,48 @@ sub check_envelope {
 # Check headers against the config.
 # Array iteration on each header config is a scalability problem.
 sub check_headers {
-	my ($eheaders) = @_;
-	foreach my $eheader (keys(%$eheaders)) {	# headers from email
-		my @eheadervals = @$eheaders{$eheader};	# multiple instances of header, such as received
-		if ($conf->val('headers',$eheader)) {	# header checks from conf
-			my @h_checks = $conf->val('headers',$eheader);
-			foreach my $hchk (@h_checks) {		# iterate over checks
-				if ($hchk =~ s/^\~//) {			# is regex check
-					foreach my $ehval (@eheadervals) {	# iterate over all of the header instances values
-						warn "$logtag: checking header $eheader $ehval\n" if $verbose;
-						warn "$logtag:\t\~$hchk\n" if $verbose > 1;
-						if ($ehval =~ m/$hchk/) {
-							if ($checks_dryrun{headers}) {
-								warn "$logtag: DRYRUN BLOCK header $eheader $ehval =~ $hchk (#5.3.0)\n";
-							} else {
-								bail("$logtag: BLOCK header $eheader $ehval =~ $hchk (#5.3.0)\n",111);
-							}
+	my ($email,$headers) = @_;
+	warn "$logtag: Check headers: ".scalar(@$headers)." distinct headers\n" if $verbose;
+	foreach my $h (@$headers) {					# headers from email
+		my @hvals = $email->header($h);			# multiple instances of header (ex: received)
+		my @hchks = $conf->val('headers',$h);	# multiple checks per header
+		foreach my $hchk (@hchks) {				# iterate over checks
+			if ($hchk =~ s/^\~//) {				# is regex check
+				foreach my $hval (@hvals) {		# iterate over all of the header instances values
+					warn "$logtag: ...$h: $hval =~ $hchk\n" if $verbose > 1;
+					if ($hval =~ m/$hchk/) {	# match
+						if ($checks_dryrun{headers}) {
+							warn "$logtag: BLOCK DRYRUN header $h $hval =~ $hchk (#5.3.0)\n";
+						} else {
+							bail("$logtag: BLOCK header $h $hval =~ $hchk (#5.3.0)\n",111);
 						}
 					}
 				}
-				else {
-					foreach my $ehval (@eheadervals) {	# iterate over all of the header instances values
-						warn "$logtag: checking header $eheader $ehval\n" if $verbose;
-						warn "$logtag:\t$hchk\n" if $verbose > 1;
-						if ($ehval eq $hchk) {
-							if ($checks_dryrun{headers}) {
-								warn "$logtag: DRYRUN BLOCK header $eheader $ehval == $hchk (#5.3.0)\n";
-							} else {
-								bail("$logtag: BLOCK header $eheader $ehval == $hchk (#5.3.0)\n",111);
-							}
+			}
+			else {
+				foreach my $hval (@hvals) {		# iterate over all of the header instances values
+					warn "$logtag: ...$h: $hval eq $hchk\n" if $verbose > 1;
+					if ($hval eq $hchk) {
+						if ($checks_dryrun{headers}) {
+							warn "$logtag: BLOCK DRYRUN header $h $hval == $hchk (#5.3.0)\n";
+						} else {
+							bail("$logtag: BLOCK header $h $hval == $hchk (#5.3.0)\n",111);
 						}
 					}
 				}
 			}
 		}
-	}	
+	}
 }
 
 # Phishhook check analyzing envelope sender, from header, number of envelope recipients
 sub check_phishfrom {
 	my ($mailfrom,$rcptto,$from) = @_;
 	my $numrcpttos = scalar(split(/,/,$rcptto));
-	warn "$logtag: checking phishfrom envelope sender $mailfrom from $from to $numrcpttos recipients\n" if $verbose;
+	warn "$logtag: Check phishfrom: envelope sender $mailfrom from $from to $numrcpttos recipients\n" if $verbose;
 	if (($mailfrom ne $from) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
 		if ($checks_dryrun{phishfrom}) {
-			warn "$logtag: DRYRUN BLOCK phishfrom envelope sender $mailfrom not equal $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n";
+			warn "$logtag: BLOCK DRYRUN phishfrom envelope sender $mailfrom not equal $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n";
 		} else {
 			bail("$logtag: BLOCK phishfrom envelope sender $mailfrom not equal $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n",111);
 		}
@@ -199,21 +193,15 @@ sub check_phishhook {
 	my ($user) = @_;
 	if (!$user) { return; }
 
-	warn "$logtag: phishhook check authuser $user\n" if $verbose;
+	warn "$logtag: Check phishhook: authuser $user\n" if $verbose;
 
 	my %safe_countries;
 	foreach (split(',',$conf->val('phishhook','safe_countries'))) {
-		$safe_countries{$_} = 1;	
+		$safe_countries{$_} = 1;
 	}
 
 	my ($this_log,$last_log) = mine_smtp_auth_log($user);
 	my $geoip = Geo::IP->new(GEOIP_STANDARD);	
-	
-	# last log
-	my ($last_tai,$last_ip) = split(/\s+/,$last_log);
-	my $last_gentime = tai64nlocal($last_tai);
-	my $last_unixtime = tai64nunix($last_tai);
-	my $last_country = $geoip->country_code_by_addr($last_ip);
 	
 	# this log
 	my ($this_tai,$this_ip) = split(/\s+/,$this_log);
@@ -221,44 +209,56 @@ sub check_phishhook {
 	my $this_unixtime = tai64nunix($this_tai);
 	my $this_country = $geoip->country_code_by_addr($this_ip);
 	
+	# last log
+	my ($last_tai,$last_ip) = split(/\s+/,$last_log);
+	my $last_gentime = tai64nlocal($last_tai);
+	my $last_unixtime = tai64nunix($last_tai);
+	my $last_country = $geoip->country_code_by_addr($last_ip);
+	
 	my $hours_diff = ($this_unixtime - $last_unixtime)/60/60;
 	
 	if ($verbose) {
-		warn "$logtag: last_login = $last_tai $last_gentime $last_unixtime $last_ip $last_country\n";
-		warn "$logtag: this_login = $this_tai $this_gentime $this_unixtime $this_ip $this_country\n";
-		warn "$logtag: hours_diff = $hours_diff\n";
+		warn "$logtag: ...this_login = $this_tai $this_gentime $this_unixtime $this_ip $this_country\n";
+		warn "$logtag: ...last_login = $last_tai $last_gentime $last_unixtime $last_ip $last_country\n";
+		warn "$logtag: ...hours_diff = $hours_diff\n";
 	}
 	
 	# phish logic
 	
+	# No idea where we are, so be safe
+	if (!$this_country) {
+		warn "$logtag: ...this country unknown, passed\n" if ($verbose > 1);
+		return;
+	}
+
 	# Haven't met a domestic (US,CA,etc) phisher yet
 	if (exists($safe_countries{$this_country})) {
-		warn "$logtag: phishhook user $user this country $this_country is safe, passed\n" if ($verbose > 1);
+		warn "$logtag: ...this country $this_country is safe, passed\n" if ($verbose > 1);
 		return;
 	}
 
 	# We don't have a prior login, so we're good
 	if (!$last_country) {
-		warn "$logtag: phishhook user $user has no prior login, passed\n" if ($verbose > 1);
+		warn "$logtag: ...no prior login or last country unknown, passed\n" if ($verbose > 1);
 		return;
 	}
 	
 	# Didn't start here (US,CA,etc), probably on vacation
 	if (!exists($safe_countries{$last_country})) {
-		warn "$logtag: phishhook user $user last country $last_country is safe, passed\n" if ($verbose > 1);
+		warn "$logtag: ...last country $last_country not safe maybe vacation, passed\n" if ($verbose > 1);
 		return;
 	}
 	
 	# No hop, we're good
 	if ($last_country eq $this_country) {
-		warn "$logtag: phishhook user $user last_country $last_country eq this_country $this_country, passed\n" if ($verbose > 1);
+		warn "$logtag: ...last_country $last_country eq this_country $this_country, passed\n" if ($verbose > 1);
 		return;
 	}
 	
 	# Far enough time between hops, we're good
-	my $hours_min = $conf->val('phishhook','hours_min');
-	if ($hours_diff > $hours_min) {
-		warn "$logtag: phishhook user $user hours_diff $hours_diff > hours_min $hours_min, passed\n" if ($verbose > 1);
+	my $hours_lapse = $conf->val('phishhook','hours_lapse');
+	if ($hours_diff > $hours_lapse) {
+		warn "$logtag: ...hours_diff $hours_diff > hours_lapse $hours_lapse, passed\n" if ($verbose > 1);
 		return;
 	}
 	
@@ -277,7 +277,7 @@ sub check_phishhook {
 	#  - block this session
 	
 	if ($checks_dryrun{phishhook}) {
-		warn "$logtag: DRYRUN BLOCK phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#5.3.0)\n";
+		warn "$logtag: BLOCK DRYRUN phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#5.3.0)\n";
 	} else {
 		# snag the user
 		#system("/opt/bin/phishhook_snag.pl $username $ip $parts[0] $parts[1] $parts[3] $lastcountry");
@@ -287,7 +287,7 @@ sub check_phishhook {
 
 # Debug to STDERR
 sub debug {
-	my ($headers) = @_;
+	my ($email,$headers) = @_;
 	#open (OUT,">>/tmp/qmail-skim.debug") or die "Cannot write /tmp/qmail-skim.debug: $!\n";
 	#print OUT "=== ".localtime(time())." ===\n";
 	my $i=0;
@@ -303,13 +303,15 @@ sub debug {
 		foreach my $p ($conf->Parameters($s)) {
 			my @vals = $conf->val($s,$p);	# assume all are multivalue
 			foreach (@vals) {
-				warn "$logtag: DEBUG:\t$p=$_\n";
+				warn "$logtag: DEBUG: \t$p=$_\n";
 			}
 		}
 	}
-	
-	foreach (keys(%$headers)) {
-		warn "$logtag: DEBUG: $_: $$headers{$_}\n";
+	foreach my $h (@$headers) {
+		my @vals = $email->header($h);	# assume all are multivalue
+		foreach (@vals) {
+			warn "$logtag: DEBUG: $h: $_\n";
+		}
 	}
 	my $env = $envelope;
 	$env =~ s/\0/\\0/g;	# convert nulls to printable string for debugging
@@ -370,13 +372,13 @@ sub mine_smtp_auth_log {
 	my @logins;
 	# parse the current log
 	if (-e "$qmail_logs/current") {
-		warn "$logtag: parsing log $qmail_logs/current\n" if ($verbose > 1);
-		open (LOG,"$qmail_logs/current") or die "$logtag: cannot open $qmail_logs/current: $!\n";
+		warn "$logtag: ...parsing log $qmail_logs/current\n" if ($verbose > 1);
+		open (LOG,"$qmail_logs/current") or warn "$logtag: Cannot open $qmail_logs/current: $!\n";
 		while (<LOG>) {
 			# @400000004f6769fb232759fc qmail-smtpd[713]: AUTH successful [137.143.102.113] xhardy1
 			if (m/(\S+) qmail-smtpd.*AUTH successful \[(\S+)\] $user/) {
 				push (@logins,"$1 $2");
-				warn "$logtag: $1 $2\n" if ($verbose > 2);
+				warn "$logtag: ...$1 $2\n" if ($verbose > 2);
 			}
 		}
 		close (LOG);
@@ -384,10 +386,10 @@ sub mine_smtp_auth_log {
 	# parse the first historical log, as we may lack login info if it rolled
 	if (scalar(@logins) < 2) {
 		my @logs;
-		opendir (LOGD,"$qmail_logs") or die "$logtag: cannot opendir $qmail_logs: $!\n";
+		opendir (LOGD,"$qmail_logs") or warn "$logtag: Cannot opendir $qmail_logs: $!\n";
 		while (my $l = readdir(LOGD)) {
 			if ($l =~ m/^@/) {	# @400000004f67d6612991d2a4.s
-				warn "$logtag: found log $qmail_logs/$l\n" if ($verbose > 2);
+				warn "$logtag: ...found log $qmail_logs/$l\n" if ($verbose > 2);
 				push (@logs,$l);
 			}
 		}
@@ -395,13 +397,13 @@ sub mine_smtp_auth_log {
 		@logs = sort(@logs);
 		
 		my $l = pop(@logs);	# just the last one
-		warn "$logtag: parsing log $qmail_logs/$l\n" if ($verbose > 1);
-		open (LOG,"$qmail_logs/$l") or die "$logtag: cannot open $qmail_logs/$l: $!\n";
+		warn "$logtag: ...parsing log $qmail_logs/$l\n" if ($verbose > 1);
+		open (LOG,"$qmail_logs/$l") or die "$logtag: Cannot open $qmail_logs/$l: $!\n";
 		while (<LOG>) {
 			# @400000004f6769fb232759fc qmail-smtpd[713]: AUTH successful [137.143.102.113] xhardy1
 			if (m/(\S+) qmail-smtpd.*AUTH successful \[(\S+)\] $user/) {
 				push (@logins,"$1 $2");
-				warn "$logtag: $1 $2\n" if ($verbose > 2);
+				warn "$logtag: ...$1 $2\n" if ($verbose > 2);
 			}
 		}
 		close (LOG);
@@ -442,7 +444,7 @@ sub parse_envelope {
 sub qmail_inject {
 	my ($mailfrom,$rcptto,$msg) = @_;
 	
-	warn "$logtag: Injecting message using $qmail_inject\n" if $verbose;
+	warn "$logtag: Injecting message with $qmail_inject\n" if $verbose;
 	
 	my @rcptto = split(/,/,$rcptto);
 	open (INJ,"| $qmail_inject -f$mailfrom -A @rcptto") or die "$logtag: Cannot open qmail-inject: $!\n";
@@ -458,7 +460,7 @@ sub qmail_inject {
 sub qmail_queue {
 	my ($envelope,$message) = @_;
 
-	warn "$logtag: Fork off child into $qmail_queue\n" if $verbose;
+	warn "$logtag: Queueing message with $qmail_queue\n";
 	
 	# Create a pipe through which to send the envelope addresses.
 	pipe (EOUT, EIN) or bail("$logtag: Unable to create envelope pipe: $!\n");
