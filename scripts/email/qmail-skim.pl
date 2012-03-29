@@ -58,7 +58,7 @@ main: {
 	my ($mailfrom,$rcptto) = parse_envelope($envelope);
 	
 	# debug
-	debug($email,\@headers) if $conf->val('global','debug');
+	debug($email,\@headers) if $verbose > 2;
 	
 	#warn "$logtag: authuser: ".$ENV{SMTP_AUTH_USER}."\n";
 	#warn "$logtag: mailfrom: $mailfrom\n";
@@ -90,9 +90,10 @@ sub bail {
 # Check body against the config
 sub check_body {
 	my ($body) = @_;
-	my @b_checks = $conf->val('body','body');
-	warn "$logtag: Check body\n" if $verbose;
-	foreach my $bchk (@b_checks) {		# iterate over checks
+	my $numl; $numl++ while ($body =~ m/\n/g);	# count lines
+	my @bchks = $conf->val('body','body');
+	warn "$logtag: Check body: $numl lines\n" if $verbose;
+	foreach my $bchk (@bchks) {		# iterate over checks
 		$bchk =~ s/^\~//;
 		warn "$logtag: ...body =~ $bchk\n" if $verbose > 1;
 		if ($body =~ m/$bchk/) {
@@ -195,12 +196,28 @@ sub check_phishhook {
 
 	warn "$logtag: Check phishhook: authuser $user\n" if $verbose;
 
+	# Used below in checks to exclude current domestic logins and to 
+	# exclude foreign to foreign hops as travellers
 	my %safe_countries;
 	foreach (split(',',$conf->val('phishhook','safe_countries'))) {
 		$safe_countries{$_} = 1;
 	}
-
-	my ($this_log,$last_log) = mine_smtp_auth_log($user);
+	
+	# Jeff: I was thinking maybe if we had a wtf user that it triggered on 
+	# always, when that cca logged in, it just automatically snagged them.
+	# Even better here in qmail-skim since we can set test params in the config.
+	my ($test_user,$test_this_log,$test_last_log) = split(/,/,$conf->val('phishhook','test'));
+	
+	# mine the logs or pull values out of phishhook test parameter
+	my ($this_log,$last_log);
+	if ($test_user && $user eq $test_user) {
+		($this_log,$last_log) = ($test_this_log,$test_last_log);
+		warn "$logtag: ...parsing test phishhook parameters from config" if ($verbose > 1);
+		warn "$logtag: ...$last_log\n" if ($verbose > 2);
+		warn "$logtag: ...$this_log\n" if ($verbose > 2);
+	} else {
+		($this_log,$last_log) = mine_smtp_auth_log($user);
+	}
 	my $geoip = Geo::IP->new(GEOIP_STANDARD);	
 	
 	# this log
@@ -231,7 +248,7 @@ sub check_phishhook {
 		return;
 	}
 
-	# Haven't met a domestic (US,CA,etc) phisher yet
+	# Haven't met a domestic (US, CA, etc) phisher yet
 	if (exists($safe_countries{$this_country})) {
 		warn "$logtag: ...this country $this_country is safe, passed\n" if ($verbose > 1);
 		return;
@@ -243,7 +260,7 @@ sub check_phishhook {
 		return;
 	}
 	
-	# Didn't start here (US,CA,etc), probably on vacation
+	# Didn't start here (US, CA, etc) probably on vacation
 	if (!exists($safe_countries{$last_country})) {
 		warn "$logtag: ...last country $last_country not safe maybe vacation, passed\n" if ($verbose > 1);
 		return;
@@ -253,6 +270,11 @@ sub check_phishhook {
 	if ($last_country eq $this_country) {
 		warn "$logtag: ...last_country $last_country eq this_country $this_country, passed\n" if ($verbose > 1);
 		return;
+	}
+	# Math problem
+	if ($hours_diff <= 0) {
+		warn "$logtag: ...hours_diff $hours_diff <= 0 math oops and something wrong, passed\n" if ($verbose > 1);
+		return;	
 	}
 	
 	# Far enough time between hops, we're good
@@ -277,11 +299,12 @@ sub check_phishhook {
 	#  - block this session
 	
 	if ($checks_dryrun{phishhook}) {
-		warn "$logtag: BLOCK DRYRUN phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#5.3.0)\n";
+		warn "$logtag: BLOCK DRYRUN phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#4.3.0)\n";
 	} else {
 		# snag the user
-		#system("/opt/bin/phishhook_snag.pl $username $ip $parts[0] $parts[1] $parts[3] $lastcountry");
-		bail("$logtag: BLOCK phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#5.3.0)\n",111);
+		warn "$logtag: ...executing /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country" if ($verbose > 1);
+		system("/opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country");
+		bail("$logtag: BLOCK phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff hours (#4.3.0)\n",111);
 	}
 }
 
@@ -316,7 +339,7 @@ sub debug {
 	my $env = $envelope;
 	$env =~ s/\0/\\0/g;	# convert nulls to printable string for debugging
 	warn "$logtag: DEBUG: FD1: $env\n";
-	warn "$logtag: DEBUG: FD0:\n$message\n" if $verbose > 2;
+	warn "$logtag: DEBUG: FD0:\n$message\n" if $verbose > 3;
 	#close (OUT);
 }
 
