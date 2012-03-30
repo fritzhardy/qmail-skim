@@ -83,7 +83,7 @@ sub bail {
 	# 111: 451 qq temporary problem (#4.3.0)
 	my ($msg,$err) = @_;
 	$err = 111 if !$err;
-	warn $msg;
+	warn $msg if $msg;
 	exit $err;
 }
 
@@ -284,7 +284,7 @@ sub check_phishhook {
 		return;
 	}
 	
-	#If we get here: 
+	# If we get here: 
 	#  - the user is not in the US,
 	#  - the user has logged in in recent history, 
 	#  - the user is in a different country than they were last in,
@@ -299,11 +299,13 @@ sub check_phishhook {
 	#  - block this session
 	
 	if ($checks_dryrun{phishhook}) {
+		warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country\n";
 		warn "$logtag: BLOCK DRYRUN phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#4.3.0)\n";
 	} else {
 		# snag the user
-		warn "$logtag: ...executing /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country" if ($verbose > 1);
-		system("/opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country");
+		my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country");
+		$exitval >>= 8;
+		warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country: $exitval\n";
 		bail("$logtag: BLOCK phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff hours (#4.3.0)\n",111);
 	}
 }
