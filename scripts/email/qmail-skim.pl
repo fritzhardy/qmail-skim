@@ -179,12 +179,16 @@ sub check_headers {
 sub check_phishfrom {
 	my ($mailfrom,$rcptto,$from) = @_;
 	my $numrcpttos = scalar(split(/,/,$rcptto));
-	warn "$logtag: Check phishfrom: envelope sender $mailfrom from $from to $numrcpttos recipients\n" if $verbose;
-	if (($mailfrom ne $from) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
+	my $from_sane = $from;	# Jeff Hardy <xhardy1@potsdam.edu>
+	$from_sane =~ s/.*<//;
+	$from_sane =~ s/>.*//;
+	warn "$logtag: Check phishfrom: mailfrom $mailfrom from $from to $numrcpttos recipients\n" if $verbose;
+	warn "...from_sane = $from_sane\n" if $verbose > 1;
+	if (($mailfrom ne $from_sane) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
 		if ($checks_dryrun{phishfrom}) {
-			warn "$logtag: BLOCK DRYRUN phishfrom envelope sender $mailfrom not equal $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n";
+			warn "$logtag: BLOCK DRYRUN phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n";
 		} else {
-			bail("$logtag: BLOCK phishfrom envelope sender $mailfrom not equal $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n",111);
+			bail("$logtag: BLOCK phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n",111);
 		}
 	}
 }
