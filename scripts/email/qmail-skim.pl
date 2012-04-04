@@ -183,7 +183,7 @@ sub check_phishfrom {
 	$from_sane =~ s/.*<//;
 	$from_sane =~ s/>.*//;
 	warn "$logtag: Check phishfrom: mailfrom $mailfrom from $from to $numrcpttos recipients\n" if $verbose;
-	warn "...from_sane = $from_sane\n" if $verbose > 1;
+	warn "$logtag: ...from_sane = $from_sane\n" if $verbose > 1;
 	if (($mailfrom ne $from_sane) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
 		if ($checks_dryrun{phishfrom}) {
 			warn "$logtag: BLOCK DRYRUN phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n";
