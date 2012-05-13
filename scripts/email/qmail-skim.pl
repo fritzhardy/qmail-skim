@@ -17,9 +17,18 @@ use Geo::IP;
 my $v_header = "X-Qmail-Skim";
 my $qmail_inject = "/var/qmail/bin/qmail-inject";
 my $qmail_queue = "/var/qmail/bin/qmail-queue";
-my $qmail_logs = "/var/log/qmail/smtpd-ssl";
+my $logtag = "qmail-skim.pl[$$]";	#epoch2isotime();	#$headers{'Message-ID'};
 
-my $logtag = 'qmail-skim.pl';	#epoch2isotime();	#$headers{'Message-ID'};
+# log location by tcp port
+my %qmail_logs = (
+	25 => "/var/log/qmail/smtpd",
+	465 => "/var/log/qmail/smtpd-ssl",
+	587 => "/var/log/qmail/submission",
+);
+my $qmail_logs = $qmail_logs{$ENV{TCPLOCALPORT}};
+
+my %checks_failed;	# store failed checks, list since dryrun can cause multiple fails
+my %logsum;			# build a hash summary of all info bits
 
 # lest we loop infinitely
 delete($ENV{QMAILQUEUE});
@@ -31,11 +40,13 @@ my $envelope = get_envelope();
 # find our config
 my $conf;
 if ($ENV{QMAILSKIMCONF} && -e $ENV{QMAILSKIMCONF}) {
-	warn "$logtag: Reading configuration $ENV{QMAILSKIMCONF}\n";
+	#$logsum{config} = $ENV{QMAILSKIMCONF};
+	#warn "$logtag: Reading configuration $ENV{QMAILSKIMCONF}\n";
 	$conf = Config::IniFiles->new( -file => $ENV{QMAILSKIMCONF}, -nocase => 1 );
 	warn "@Config::IniFiles::errors\n" if @Config::IniFiles::errors;
 } elsif (-e '/etc/qmail-skim.conf') {
-	warn "$logtag: Reading configuration /etc/qmail-skim.conf\n";
+	#$logsum{config} = '/etc/qmail-skim.conf';
+	#warn "$logtag: Reading configuration /etc/qmail-skim.conf\n";
 	$conf = Config::IniFiles->new( -file => '/etc/qmail-skim.conf', -nocase => 1 );
 	warn "@Config::IniFiles::errors\n" if @Config::IniFiles::errors;
 } else {
@@ -47,6 +58,8 @@ if ($ENV{QMAILSKIMCONF} && -e $ENV{QMAILSKIMCONF}) {
 my $verbose = $conf->val('global','verbose');
 my %checks_enabled; foreach (split(/,/,$conf->val('global','enable'))) { $checks_enabled{$_} = 1; }
 my %checks_dryrun; foreach (split(/,/,$conf->val('global','dryrun'))) { $checks_dryrun{$_} = 1; }
+#$logsum{checks} = $conf->val('global','enable');
+#$logsum{dryrun} = $conf->val('global','dryrun');
 
 main: {
 	# breakdown the message
@@ -60,19 +73,24 @@ main: {
 	# debug
 	debug($email,\@headers) if $verbose > 2;
 	
-	#warn "$logtag: authuser: ".$ENV{SMTP_AUTH_USER}."\n";
-	#warn "$logtag: mailfrom: $mailfrom\n";
-	#warn "$logtag: rcpttos: $rcptto\n";
-	#warn "$logtag: from: ".$email->header("From")."\n";
+	# build log summary up front in case a check bails
+	$logsum{authuser} = $ENV{SMTP_AUTH_USER} if $ENV{SMTP_AUTH_USER};
+	$logsum{mailfrom} = $mailfrom;
+	$logsum{rcptto} = scalar(split(/,/,$rcptto));
+	$logsum{from} = $email->header("From");
+	$logsum{from} =~ s/\s/_/g;
 	
-	# run checks
+	# run checks and potentially produce more log summary hits
 	check_phishhook($ENV{SMTP_AUTH_USER}) if $checks_enabled{phishhook};
 	check_phishfrom($mailfrom,$rcptto,$email->header("from")) if $checks_enabled{phishfrom};
+	check_ratelimit($mailfrom) if $checks_enabled{ratelimit};
 	check_envelope($mailfrom,$rcptto) if ($checks_enabled{envelope});
 	check_headers($email,\@headers) if ($checks_enabled{headers});
 	check_body($body) if ($checks_enabled{body});
 	
 	# queue it up
+	$logsum{fate} = 'pass';
+	log_summary();
 	#qmail_inject($mailfrom,$rcptto,$message);
 	qmail_queue($envelope,$message);
 }
@@ -84,6 +102,8 @@ sub bail {
 	my ($msg,$err) = @_;
 	$err = 111 if !$err;
 	warn $msg if $msg;
+	$logsum{fate} = 'block';
+	log_summary();
 	exit $err;
 }
 
@@ -97,6 +117,7 @@ sub check_body {
 		$bchk =~ s/^\~//;
 		warn "$logtag: ...body =~ $bchk\n" if $verbose > 1;
 		if ($body =~ m/$bchk/) {
+			$checks_failed{body} = 1;
 			if ($checks_dryrun{body}) {
 				warn "$logtag: BLOCK DRYRUN body =~ $bchk (#5.3.0)\n";
 			} else {
@@ -116,6 +137,7 @@ sub check_envelope {
 		warn "$logtag: ...$mfchk\n" if $verbose > 1;
 		if ($mfchk =~ s/^\~//) {
 			if ($mailfrom =~ m/$mfchk/) {
+				$checks_failed{envelope} = 1;
 				if ($checks_dryrun{envelope}) {
 					warn "$logtag: BLOCK DRYRUN envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n";	
 				} else {
@@ -125,6 +147,7 @@ sub check_envelope {
 		}
 		else {
 			if ($mailfrom eq $mfchk) {
+				$checks_failed{envelope} = 1;
 				if ($checks_dryrun{envelope}) {
 					warn "$logtag: BLOCK DRYRUN envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n";
 				} else {
@@ -151,6 +174,7 @@ sub check_headers {
 				foreach my $hval (@hvals) {		# iterate over all of the header instances values
 					warn "$logtag: ...$h: $hval =~ $hchk\n" if $verbose > 1;
 					if ($hval =~ m/$hchk/) {	# match
+						$checks_failed{headers} = 1;
 						if ($checks_dryrun{headers}) {
 							warn "$logtag: BLOCK DRYRUN header $h $hval =~ $hchk (#5.3.0)\n";
 						} else {
@@ -163,6 +187,7 @@ sub check_headers {
 				foreach my $hval (@hvals) {		# iterate over all of the header instances values
 					warn "$logtag: ...$h: $hval eq $hchk\n" if $verbose > 1;
 					if ($hval eq $hchk) {
+						$checks_failed{headers} = 1;
 						if ($checks_dryrun{headers}) {
 							warn "$logtag: BLOCK DRYRUN header $h $hval == $hchk (#5.3.0)\n";
 						} else {
@@ -171,6 +196,41 @@ sub check_headers {
 					}
 				}
 			}
+		}
+	}
+}
+
+# Ratelimit check analyzing envelope sender and number of recipients over interval
+sub check_ratelimit {
+	my ($mailfrom) = @_;
+	if (!$mailfrom) { return; }
+	warn "$logtag: Check ratelimit: mailfrom $mailfrom\n" if $verbose;
+	
+	my $maxrcptto = $conf->val('ratelimit','maxrcptto');
+	my %skims = mine_qmail_skim_log("mailfrom=>$mailfrom");
+	
+	# figure out the beginning interval time after which we care about
+	my $tbegin = time() - $conf->val('ratelimit','interval');
+	my $tbegin_tai = unixtai64n($tbegin);
+	print STDERR "$logtag: ...time begin: $tbegin_tai (".tai64nlocal($tbegin_tai).") $tbegin\n" if ($verbose > 2);
+	
+	# iterate over logs grabbing only those within interval
+	my $rcpttos;
+	foreach my $tai (sort(keys(%skims))) {
+		my $tunix = tai2unix($tai);
+		if ($tunix > $tbegin) {
+			print STDERR "$logtag: ...$tai (".tai64nlocal($tai).") $tunix $skims{$tai}{mailfrom} $skims{$tai}{rcptto}\n";
+			$rcpttos += $skims{$tai}{rcptto};
+		}
+	}
+	
+	# determine fate
+	if ($rcpttos > $conf->val('ratelimit','maxrcptto')) {
+		$checks_failed{ratelimit} = 1;
+		if ($checks_dryrun{ratelimit}) {
+			warn "$logtag: BLOCK DRYRUN ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s\n";
+		} else {
+			bail("$logtag: BLOCK ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s\n",111);
 		}
 	}
 }
@@ -185,6 +245,7 @@ sub check_phishfrom {
 	warn "$logtag: Check phishfrom: mailfrom $mailfrom from $from to $numrcpttos recipients\n" if $verbose;
 	warn "$logtag: ...from_sane = $from_sane\n" if $verbose > 1;
 	if (($mailfrom ne $from_sane) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
+		$checks_failed{phishfrom} = 1;
 		if ($checks_dryrun{phishfrom}) {
 			warn "$logtag: BLOCK DRYRUN phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n";
 		} else {
@@ -229,6 +290,9 @@ sub check_phishhook {
 	my $this_gentime = tai64nlocal($this_tai);
 	my $this_unixtime = tai64nunix($this_tai);
 	my $this_country = $geoip->country_code_by_addr($this_ip);
+	
+	$logsum{ipaddr} = $this_ip;
+	$logsum{country} = $this_country;
 	
 	# last log
 	my ($last_tai,$last_ip) = split(/\s+/,$last_log);
@@ -302,6 +366,7 @@ sub check_phishhook {
 	#   + Add them to the 'phish' group
 	#  - block this session
 	
+	$checks_failed{phishhook} = 1;
 	if ($checks_dryrun{phishhook}) {
 		warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country\n";
 		warn "$logtag: BLOCK DRYRUN phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#4.3.0)\n";
@@ -394,8 +459,84 @@ sub get_message {
 	return $message;
 }
 
-# Parse qmail logs looking for last smtp-auth login by 
-# given username, returning ip address and timestamp
+# Print the %logsum hash in a nice format to STDERR
+# so that future mining can easily pull this info 
+# back in as a hash.
+sub log_summary {
+	my $logline = "$logtag: SKIM ";
+	$logsum{checksfailed} = join(',',sort(keys(%checks_failed))) if %checks_failed;
+	foreach (sort(keys(%logsum))) {
+		$logline .= $_.'=>'.$logsum{$_}.' ';
+	}
+	$logline =~ s/\s*$//g;	# trailing whitespace
+	print STDERR "$logline\n";
+}
+
+# Parse qmail logs looking for last qmail-skim bits 
+# matching given string such as authuser=>$user.
+# Returns hash of hashes keyed by TAI datestamp.
+sub mine_qmail_skim_log {
+	my ($str) = @_;
+	my %skims;
+	# parse the current log
+	if (-e "$qmail_logs/current") {
+		warn "$logtag: ...parsing log $qmail_logs/current\n" if ($verbose > 1);
+		open (LOG,"$qmail_logs/current") or warn "$logtag: Cannot open $qmail_logs/current: $!\n";
+		while (<LOG>) {
+			# @400000004fa9e36514affb7c qmail-skim.pl[31859]: SKIM /
+			# config=>/etc/qmail-skim-test.conf /
+			# from=>qmailskim@potsdam.edu /
+			# mailfrom=>qmailskim@potsdam.edu rcptto=>1
+			if (m/qmail-skim.pl.*SKIM .*$str/) {
+				m/(\S+) qmail-skim\.pl.* SKIM (.*)/;
+				foreach (split(/\s+/,$2)) {
+					my ($key,$val) = split(/=>/,$_);
+					$skims{$1}{$key} = $val;
+				}
+				warn "$logtag: ...$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
+			}
+		}
+		close (LOG);
+	}
+	# parse the first historical log, as we may lack info if it rolled
+	{
+		my @logs;
+		opendir (LOGD,"$qmail_logs") or warn "$logtag: Cannot opendir $qmail_logs: $!\n";
+		while (my $l = readdir(LOGD)) {
+			if ($l =~ m/^@/) {	# @400000004f67d6612991d2a4.s
+				warn "$logtag: ...found log $qmail_logs/$l\n" if ($verbose > 2);
+				push (@logs,$l);
+			}
+		}
+		closedir (LOGD);
+		@logs = sort(@logs);
+		
+		my $l = pop(@logs);	# just the last one
+		warn "$logtag: ...parsing log $qmail_logs/$l\n" if ($verbose > 1);
+		open (LOG,"$qmail_logs/$l") or die "$logtag: Cannot open $qmail_logs/$l: $!\n";
+		while (<LOG>) {
+			# @400000004fa9e36514affb7c qmail-skim.pl[31859]: SKIM /
+			# config=>/etc/qmail-skim-test.conf /
+			# from=>qmailskim@potsdam.edu /
+			# mailfrom=>qmailskim@potsdam.edu rcptto=>1
+			if (m/qmail-skim.pl.*SKIM .*$str/) {
+				m/(\S+) qmail-skim\.pl.* SKIM (.*)/;
+				foreach (split(/\s+/,$2)) {
+					my ($key,$val) = split(/=>/,$_);
+					$skims{$1}{$key} = $val;
+				}
+				warn "$logtag: ...$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
+			}
+		}
+		close (LOG);
+	}
+	
+	return %skims;
+}
+
+# Parse qmail logs looking for last qmail-smtpd smtp-auth login 
+# by given username, returning ip address and timestamp.
+# Returns list of this and last logins in form TAI timestamp and ip space-separated
 sub mine_smtp_auth_log {
 	my ($user) = @_;
 	my @logins;
@@ -407,7 +548,7 @@ sub mine_smtp_auth_log {
 			# @400000004f6769fb232759fc qmail-smtpd[713]: AUTH successful [137.143.102.113] xhardy1
 			if (m/(\S+) qmail-smtpd.*AUTH successful \[(\S+)\] $user/) {
 				push (@logins,"$1 $2");
-				warn "$logtag: ...$1 $2\n" if ($verbose > 2);
+				warn "$logtag: ...$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
 			}
 		}
 		close (LOG);
@@ -432,7 +573,7 @@ sub mine_smtp_auth_log {
 			# @400000004f6769fb232759fc qmail-smtpd[713]: AUTH successful [137.143.102.113] xhardy1
 			if (m/(\S+) qmail-smtpd.*AUTH successful \[(\S+)\] $user/) {
 				push (@logins,"$1 $2");
-				warn "$logtag: ...$1 $2\n" if ($verbose > 2);
+				warn "$logtag: ...$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
 			}
 		}
 		close (LOG);
