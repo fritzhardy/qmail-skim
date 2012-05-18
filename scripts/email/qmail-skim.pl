@@ -516,7 +516,7 @@ sub mine_qmail_skim_log {
 		opendir (LOGD,"$qmail_logs") or warn "$logtag: Cannot opendir $qmail_logs: $!\n";
 		while (my $l = readdir(LOGD)) {
 			if ($l =~ m/^@/) {	# @400000004f67d6612991d2a4.s
-				warn "$logtag: ...found log $qmail_logs/$l\n" if ($verbose > 1);
+				warn "$logtag: ......found log $l (".tai64nlocal($l).")\n" if ($verbose > 2);
 				push (@logs,$l);
 			}
 		}
@@ -571,7 +571,7 @@ sub mine_smtp_auth_log {
 		opendir (LOGD,"$qmail_logs") or warn "$logtag: Cannot opendir $qmail_logs: $!\n";
 		while (my $l = readdir(LOGD)) {
 			if ($l =~ m/^@/) {	# @400000004f67d6612991d2a4.s
-				warn "$logtag: ...found log $qmail_logs/$l\n" if ($verbose > 1);
+				warn "$logtag: ......found log $l (".tai64nlocal($l).")\n" if ($verbose > 2);
 				push (@logs,$l);
 			}
 		}
