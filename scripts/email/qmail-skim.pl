@@ -41,12 +41,12 @@ my $envelope = get_envelope();
 my $conf;
 if ($ENV{QMAILSKIMCONF} && -e $ENV{QMAILSKIMCONF}) {
 	#$logsum{config} = $ENV{QMAILSKIMCONF};
-	#warn "$logtag: Reading configuration $ENV{QMAILSKIMCONF}\n";
+	warn "$logtag: Reading configuration from $ENV{QMAILSKIMCONF}\n";
 	$conf = Config::IniFiles->new( -file => $ENV{QMAILSKIMCONF}, -nocase => 1 );
 	warn "@Config::IniFiles::errors\n" if @Config::IniFiles::errors;
 } elsif (-e '/etc/qmail-skim.conf') {
 	#$logsum{config} = '/etc/qmail-skim.conf';
-	#warn "$logtag: Reading configuration /etc/qmail-skim.conf\n";
+	warn "$logtag: Reading configuration from /etc/qmail-skim.conf\n";
 	$conf = Config::IniFiles->new( -file => '/etc/qmail-skim.conf', -nocase => 1 );
 	warn "@Config::IniFiles::errors\n" if @Config::IniFiles::errors;
 } else {
@@ -113,15 +113,16 @@ sub check_body {
 	my $numl; $numl++ while ($body =~ m/\n/g);	# count lines
 	my @bchks = $conf->val('body','body');
 	warn "$logtag: Check body: $numl lines\n" if $verbose;
+	$logsum{body} = $numl;
 	foreach my $bchk (@bchks) {		# iterate over checks
 		$bchk =~ s/^\~//;
 		warn "$logtag: ...body =~ $bchk\n" if $verbose > 1;
 		if ($body =~ m/$bchk/) {
 			$checks_failed{body} = 1;
 			if ($checks_dryrun{body}) {
-				warn "$logtag: BLOCK DRYRUN body =~ $bchk (#5.3.0)\n";
+				warn "$logtag: BLOCK DRYRUN body =~ $bchk (#4.3.0)\n";
 			} else {
-				bail("$logtag: BLOCK body =~ $bchk (#5.3.0)\n",111);
+				bail("$logtag: BLOCK body =~ $bchk (#4.3.0)\n",111);
 			}
 		}
 	}
@@ -165,7 +166,17 @@ sub check_envelope {
 # Array iteration on each header config is a scalability problem.
 sub check_headers {
 	my ($email,$headers) = @_;
-	warn "$logtag: Check headers: ".scalar(@$headers)." distinct headers\n" if $verbose;
+	
+	# count headers for reporting
+	my $numh;
+	foreach my $h (@$headers) {
+		my @hvals = $email->header($h);			# multiple instances of header (ex: received)
+		$numh += scalar(@hvals);
+	}
+	warn "$logtag: Check headers: $numh headers\n" if $verbose;
+	$logsum{headers} = $numh;
+	
+	# now iterate again (unfortunately) to run checks
 	foreach my $h (@$headers) {					# headers from email
 		my @hvals = $email->header($h);			# multiple instances of header (ex: received)
 		my @hchks = $conf->val('headers',$h);	# multiple checks per header
@@ -176,9 +187,9 @@ sub check_headers {
 					if ($hval =~ m/$hchk/) {	# match
 						$checks_failed{headers} = 1;
 						if ($checks_dryrun{headers}) {
-							warn "$logtag: BLOCK DRYRUN header $h $hval =~ $hchk (#5.3.0)\n";
+							warn "$logtag: BLOCK DRYRUN header $h $hval =~ $hchk (#4.3.0)\n";
 						} else {
-							bail("$logtag: BLOCK header $h $hval =~ $hchk (#5.3.0)\n",111);
+							bail("$logtag: BLOCK header $h $hval =~ $hchk (#4.3.0)\n",111);
 						}
 					}
 				}
@@ -189,9 +200,9 @@ sub check_headers {
 					if ($hval eq $hchk) {
 						$checks_failed{headers} = 1;
 						if ($checks_dryrun{headers}) {
-							warn "$logtag: BLOCK DRYRUN header $h $hval == $hchk (#5.3.0)\n";
+							warn "$logtag: BLOCK DRYRUN header $h $hval == $hchk (#4.3.0)\n";
 						} else {
-							bail("$logtag: BLOCK header $h $hval == $hchk (#5.3.0)\n",111);
+							bail("$logtag: BLOCK header $h $hval == $hchk (#4.3.0)\n",111);
 						}
 					}
 				}
@@ -212,25 +223,27 @@ sub check_ratelimit {
 	# figure out the beginning interval time after which we care about
 	my $tbegin = time() - $conf->val('ratelimit','interval');
 	my $tbegin_tai = unixtai64n($tbegin);
-	print STDERR "$logtag: ...time begin: $tbegin_tai (".tai64nlocal($tbegin_tai).") $tbegin\n" if ($verbose > 2);
+	print STDERR "$logtag: ...time_begin = $tbegin_tai (".tai64nlocal($tbegin_tai).") $tbegin\n" if ($verbose > 1);
 	
 	# iterate over logs grabbing only those within interval
 	my $rcpttos;
 	foreach my $tai (sort(keys(%skims))) {
 		my $tunix = tai2unix($tai);
 		if ($tunix > $tbegin) {
-			print STDERR "$logtag: ...$tai (".tai64nlocal($tai).") $tunix $skims{$tai}{mailfrom} $skims{$tai}{rcptto}\n";
+			print STDERR "$logtag: ...within_scope = $tai (".tai64nlocal($tai).") $tunix $skims{$tai}{mailfrom} $skims{$tai}{rcptto}\n" if ($verbose > 1);
 			$rcpttos += $skims{$tai}{rcptto};
 		}
 	}
+	
+	$logsum{ratelimit} = $rcpttos;
 	
 	# determine fate
 	if ($rcpttos > $conf->val('ratelimit','maxrcptto')) {
 		$checks_failed{ratelimit} = 1;
 		if ($checks_dryrun{ratelimit}) {
-			warn "$logtag: BLOCK DRYRUN ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s\n";
+			warn "$logtag: BLOCK DRYRUN ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n";
 		} else {
-			bail("$logtag: BLOCK ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s\n",111);
+			bail("$logtag: BLOCK ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n",111);
 		}
 	}
 }
@@ -247,9 +260,9 @@ sub check_phishfrom {
 	if (($mailfrom ne $from_sane) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
 		$checks_failed{phishfrom} = 1;
 		if ($checks_dryrun{phishfrom}) {
-			warn "$logtag: BLOCK DRYRUN phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n";
+			warn "$logtag: BLOCK DRYRUN phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients (#4.3.0)\n";
 		} else {
-			bail("$logtag: BLOCK phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients\n",111);
+			bail("$logtag: BLOCK phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients (#4.3.0)\n",111);
 		}
 	}
 }
@@ -257,9 +270,8 @@ sub check_phishfrom {
 # Phishhook check analyzing country and time of last login
 sub check_phishhook {
 	my ($user) = @_;
-	if (!$user) { return; }
-
 	warn "$logtag: Check phishhook: authuser $user\n" if $verbose;
+	if (!$user) { return; }
 
 	# Used below in checks to exclude current domestic logins and to 
 	# exclude foreign to foreign hops as travellers
@@ -268,8 +280,8 @@ sub check_phishhook {
 		$safe_countries{$_} = 1;
 	}
 	
-	# Jeff: I was thinking maybe if we had a wtf user that it triggered on 
-	# always, when that cca logged in, it just automatically snagged them.
+	# Matt: Jeff: I was thinking maybe if we had a wtf user that it triggered 
+	# on always, when that cca logged in, it just automatically snagged them.
 	# Even better here in qmail-skim since we can set test params in the config.
 	my ($test_user,$test_this_log,$test_last_log) = split(/,/,$conf->val('phishhook','test'));
 	
@@ -278,8 +290,8 @@ sub check_phishhook {
 	if ($test_user && $user eq $test_user) {
 		($this_log,$last_log) = ($test_this_log,$test_last_log);
 		warn "$logtag: ...parsing test phishhook parameters from config" if ($verbose > 1);
-		warn "$logtag: ...$last_log\n" if ($verbose > 2);
-		warn "$logtag: ...$this_log\n" if ($verbose > 2);
+		warn "$logtag: ...$last_log\n" if ($verbose > 1);
+		warn "$logtag: ...$this_log\n" if ($verbose > 1);
 	} else {
 		($this_log,$last_log) = mine_smtp_auth_log($user);
 	}
@@ -303,9 +315,9 @@ sub check_phishhook {
 	my $hours_diff = ($this_unixtime - $last_unixtime)/60/60;
 	
 	if ($verbose) {
-		warn "$logtag: ...this_login = $this_tai $this_gentime $this_unixtime $this_ip $this_country\n";
-		warn "$logtag: ...last_login = $last_tai $last_gentime $last_unixtime $last_ip $last_country\n";
-		warn "$logtag: ...hours_diff = $hours_diff\n";
+		warn "$logtag: ...this_login = $this_tai ($this_gentime) $this_unixtime $this_ip $this_country\n" if ($verbose > 1);
+		warn "$logtag: ...last_login = $last_tai ($last_gentime) $last_unixtime $last_ip $last_country\n" if ($verbose > 1);
+		warn "$logtag: ...hours_diff = $hours_diff\n" if ($verbose > 1);
 	}
 	
 	# phish logic
@@ -493,7 +505,7 @@ sub mine_qmail_skim_log {
 					my ($key,$val) = split(/=>/,$_);
 					$skims{$1}{$key} = $val;
 				}
-				warn "$logtag: ...$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
+				warn "$logtag: ......$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
 			}
 		}
 		close (LOG);
@@ -504,7 +516,7 @@ sub mine_qmail_skim_log {
 		opendir (LOGD,"$qmail_logs") or warn "$logtag: Cannot opendir $qmail_logs: $!\n";
 		while (my $l = readdir(LOGD)) {
 			if ($l =~ m/^@/) {	# @400000004f67d6612991d2a4.s
-				warn "$logtag: ...found log $qmail_logs/$l\n" if ($verbose > 2);
+				warn "$logtag: ...found log $qmail_logs/$l\n" if ($verbose > 1);
 				push (@logs,$l);
 			}
 		}
@@ -525,7 +537,7 @@ sub mine_qmail_skim_log {
 					my ($key,$val) = split(/=>/,$_);
 					$skims{$1}{$key} = $val;
 				}
-				warn "$logtag: ...$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
+				warn "$logtag: ......$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
 			}
 		}
 		close (LOG);
@@ -548,7 +560,7 @@ sub mine_smtp_auth_log {
 			# @400000004f6769fb232759fc qmail-smtpd[713]: AUTH successful [137.143.102.113] xhardy1
 			if (m/(\S+) qmail-smtpd.*AUTH successful \[(\S+)\] $user/) {
 				push (@logins,"$1 $2");
-				warn "$logtag: ...$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
+				warn "$logtag: ......$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
 			}
 		}
 		close (LOG);
@@ -559,7 +571,7 @@ sub mine_smtp_auth_log {
 		opendir (LOGD,"$qmail_logs") or warn "$logtag: Cannot opendir $qmail_logs: $!\n";
 		while (my $l = readdir(LOGD)) {
 			if ($l =~ m/^@/) {	# @400000004f67d6612991d2a4.s
-				warn "$logtag: ...found log $qmail_logs/$l\n" if ($verbose > 2);
+				warn "$logtag: ...found log $qmail_logs/$l\n" if ($verbose > 1);
 				push (@logs,$l);
 			}
 		}
@@ -573,7 +585,7 @@ sub mine_smtp_auth_log {
 			# @400000004f6769fb232759fc qmail-smtpd[713]: AUTH successful [137.143.102.113] xhardy1
 			if (m/(\S+) qmail-smtpd.*AUTH successful \[(\S+)\] $user/) {
 				push (@logins,"$1 $2");
-				warn "$logtag: ...$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
+				warn "$logtag: ......$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
 			}
 		}
 		close (LOG);
