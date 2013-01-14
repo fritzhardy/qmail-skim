@@ -328,15 +328,15 @@ sub check_phishhook {
 		return;
 	}
 
-	# Haven't met a domestic (US, CA, etc) phisher yet
-	if (exists($safe_countries{$this_country})) {
-		warn "$logtag: ...this country $this_country is safe, passed\n" if ($verbose > 1);
-		return;
-	}
-
 	# We don't have a prior login, so we're good
 	if (!$last_country) {
 		warn "$logtag: ...no prior login or last country unknown, passed\n" if ($verbose > 1);
+		return;
+	}
+
+	# Haven't met a domestic (US, CA, etc) phisher yet
+	if (exists($safe_countries{$this_country})) {
+		warn "$logtag: ...this country $this_country is safe, passed\n" if ($verbose > 1);
 		return;
 	}
 	
@@ -348,9 +348,15 @@ sub check_phishhook {
 	
 	# No hop, we're good
 	if ($last_country eq $this_country) {
-		warn "$logtag: ...last_country $last_country eq this_country $this_country, passed\n" if ($verbose > 1);
+		warn "$logtag: ...last country $last_country eq this_country $this_country, passed\n" if ($verbose > 1);
 		return;
 	}
+	
+	# Last login from VPN range, we assume good so travelers do not get snagged
+	if ($last_ip =~ m/^137\.143\.78\.*/) {
+		warn "$logtag: ...last_ip $last_ip within vpn range, passed\n" if ($verbose > 1); 	
+	}
+	
 	# Math problem
 	if ($hours_diff <= 0) {
 		warn "$logtag: ...hours_diff $hours_diff <= 0 math oops and something wrong, passed\n" if ($verbose > 1);
@@ -366,8 +372,9 @@ sub check_phishhook {
 	
 	# If we get here: 
 	#  - the user is not in the US,
-	#  - the user has logged in in recent history, 
+	#  - the user has logged in in recent history,
 	#  - the user is in a different country than they were last in,
+	#  - the last login was not from the campus vpn range,
 	#  - it has been less than the specified hours since the user was in the last country
 	# 
 	# We want to:
