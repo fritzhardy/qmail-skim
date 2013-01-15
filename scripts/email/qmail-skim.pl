@@ -354,7 +354,8 @@ sub check_phishhook {
 	
 	# Last login from VPN range, we assume good so travelers do not get snagged
 	if ($last_ip =~ m/^137\.143\.78\.*/) {
-		warn "$logtag: ...last_ip $last_ip within vpn range, passed\n" if ($verbose > 1); 	
+		warn "$logtag: ...last_ip $last_ip within vpn range, passed\n" if ($verbose > 1);
+		return; 	
 	}
 	
 	# Math problem
