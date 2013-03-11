@@ -280,6 +280,12 @@ sub check_phishhook {
 		$safe_countries{$_} = 1;
 	}
 	
+	# Users who are excluded from phishhook check
+	my %safe_users;
+	foreach (split(',',$conf->val('phishhook','safe_users'))) {
+		$safe_users{$_} = 1;
+	}
+	
 	# Matt: Jeff: I was thinking maybe if we had a wtf user that it triggered 
 	# on always, when that cca logged in, it just automatically snagged them.
 	# Even better here in qmail-skim since we can set test params in the config.
@@ -327,13 +333,19 @@ sub check_phishhook {
 		warn "$logtag: ...this country unknown, passed\n" if ($verbose > 1);
 		return;
 	}
-
+	
+	# Whitelisted user
+	if (exists($safe_users{$user})) {
+		warn "$logtag: ...user $user is whitelisted safe, passed\n" if ($verbose > 1);
+		return;
+	}
+	
 	# We don't have a prior login, so we're good
 	if (!$last_country) {
 		warn "$logtag: ...no prior login or last country unknown, passed\n" if ($verbose > 1);
 		return;
 	}
-
+	
 	# Haven't met a domestic (US, CA, etc) phisher yet
 	if (exists($safe_countries{$this_country})) {
 		warn "$logtag: ...this country $this_country is safe, passed\n" if ($verbose > 1);
