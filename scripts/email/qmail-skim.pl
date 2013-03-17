@@ -272,6 +272,11 @@ sub check_phishhook {
 	my ($user) = @_;
 	warn "$logtag: Check phishhook: authuser $user\n" if $verbose;
 	if (!$user) { return; }
+	
+	# Discern the beginning of the interval
+	my $tbegin = time() - $conf->val('phishhook','interval');
+	my $tbegin_tai = unixtai64n($tbegin);
+	print STDERR "$logtag: ...time_begin = $tbegin_tai (".tai64nlocal($tbegin_tai).") $tbegin\n" if ($verbose > 1);
 
 	# Used below in checks to exclude current domestic logins and to 
 	# exclude foreign to foreign hops as travellers
@@ -289,21 +294,25 @@ sub check_phishhook {
 	# Matt: Jeff: I was thinking maybe if we had a wtf user that it triggered 
 	# on always, when that cca logged in, it just automatically snagged them.
 	# Even better here in qmail-skim since we can set test params in the config.
-	my ($test_user,$test_this_log,$test_last_log) = split(/,/,$conf->val('phishhook','test'));
+	my ($test_user,@test_logins) = split(/,/,$conf->val('phishhook','test'));
 	
-	# mine the logs or pull values out of phishhook test parameter
-	my ($this_log,$last_log);
+	# Mine the logs or build fake ones out of phishhook test parameter
+	my %skims;
 	if ($test_user && $user eq $test_user) {
-		($this_log,$last_log) = ($test_this_log,$test_last_log);
 		warn "$logtag: ...parsing test phishhook parameters from config" if ($verbose > 1);
-		warn "$logtag: ...$last_log\n" if ($verbose > 1);
-		warn "$logtag: ...$this_log\n" if ($verbose > 1);
+		foreach (@test_logins) {
+			my ($tai,$country) = split(/s+/,$_);
+			$skims{$tai}{authuser} = $user;
+			$skims{$tai}{country} = $country;	
+		}
 	} else {
-		($this_log,$last_log) = mine_smtp_auth_log($user);
+		%skims = mine_qmail_skim_log("authuser=>$user",$tbegin_tai);
 	}
 	my $geoip = Geo::IP->new(GEOIP_STANDARD);	
 	
-	# this log
+	my ($this_log,$last_log);
+	
+	# this login
 	my ($this_tai,$this_ip) = split(/\s+/,$this_log);
 	my $this_gentime = tai64nlocal($this_tai);
 	my $this_unixtime = tai64nunix($this_tai);
@@ -504,46 +513,46 @@ sub log_summary {
 	print STDERR "$logline\n";
 }
 
-# Parse qmail logs looking for last qmail-skim bits 
-# matching given string such as authuser=>$user.
-# Returns hash of hashes keyed by TAI datestamp.
+# Parse qmail logs looking for all qmail-skim bits that match given string,
+# ex: authuser=>$user, and are within bounds, ie at least as recent, as the 
+# given TAI datestamp.
+# Returns hash of hashes of all matching entries keyed by TAI datestamp.
 sub mine_qmail_skim_log {
-	my ($str) = @_;
-	my %skims;
-	# parse the current log
-	if (-e "$qmail_logs/current") {
-		warn "$logtag: ...parsing log $qmail_logs/current\n" if ($verbose > 1);
-		open (LOG,"$qmail_logs/current") or warn "$logtag: Cannot open $qmail_logs/current: $!\n";
-		while (<LOG>) {
-			# @400000004fa9e36514affb7c qmail-skim.pl[31859]: SKIM /
-			# config=>/etc/qmail-skim-test.conf /
-			# from=>qmailskim@potsdam.edu /
-			# mailfrom=>qmailskim@potsdam.edu rcptto=>1
-			if (m/qmail-skim.pl.*SKIM .*$str/) {
-				m/(\S+) qmail-skim\.pl.* SKIM (.*)/;
-				foreach (split(/\s+/,$2)) {
-					my ($key,$val) = split(/=>/,$_);
-					$skims{$1}{$key} = $val;
-				}
-				warn "$logtag: ......$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
-			}
-		}
-		close (LOG);
-	}
-	# parse the first historical log, as we may lack info if it rolled
-	{
-		my @logs;
-		opendir (LOGD,"$qmail_logs") or warn "$logtag: Cannot opendir $qmail_logs: $!\n";
-		while (my $l = readdir(LOGD)) {
-			if ($l =~ m/^@/) {	# @400000004f67d6612991d2a4.s
-				warn "$logtag: ......found log $l (".tai64nlocal($l).")\n" if ($verbose > 2);
+	my ($str,$tbegin_tai) = @_;
+	return if (!$str || !$tbegin_tai);
+	
+	# Get list of logs whose TAI-stamped filename indicates they were updated 
+	# more recently than our begin time.  Relying on the filename is less 
+	# reliable than examining the tail of every log, since the stamp on the log
+	# is fractions of a second later than the last entry typically, but this is 
+	# much less intensive.  Of course, dumping this in the logs for later 
+	# retrieval is not the most elegant solution to begin with.
+	my @logs;
+	opendir (LOGD,"$qmail_logs") or warn "$logtag: Cannot opendir $qmail_logs: $!\n";
+	while (my $l = readdir(LOGD)) {
+		if ($l =~ m/^@/) {      # @400000004f67d6612991d2a4.s
+			my $lfile_tai = $l; $lfile_tai =~ s/\..*//;     # eliminate trailing .s
+			if (($lfile_tai cmp $tbegin_tai) == 1) {        # lfile time greater (more recent) than tbegin therefore in bounds
+				warn "$logtag: ......found log $l (".tai64nlocal($l).") in-bounds\n" if ($verbose > 2);
 				push (@logs,$l);
+			} else {
+				warn "$logtag: ......found log $l (".tai64nlocal($l).") out-of-bounds\n" if ($verbose > 2);
 			}
 		}
-		closedir (LOGD);
-		@logs = sort(@logs);
-		
-		my $l = pop(@logs);	# just the last one
+	}
+	closedir (LOGD);
+	
+	# Sorts naturally from oldest to most recent
+	@logs = sort(@logs);
+	
+	# Cannot forget the current log since we will be there 99% of the time
+	push (@logs,'current');
+
+	# We have isolated all the log files in bounds by their timestamp
+	# Now we iterate through them in order checking the time and 
+	# string match of each individual skim entry
+	my %skims;
+	foreach my $l (@logs) {
 		warn "$logtag: ...parsing log $qmail_logs/$l\n" if ($verbose > 1);
 		open (LOG,"$qmail_logs/$l") or die "$logtag: Cannot open $qmail_logs/$l: $!\n";
 		while (<LOG>) {
@@ -562,7 +571,6 @@ sub mine_qmail_skim_log {
 		}
 		close (LOG);
 	}
-	
 	return %skims;
 }
 
