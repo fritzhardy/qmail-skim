@@ -358,15 +358,21 @@ sub check_phishhook {
 			warn "$logtag: ...last_login = $tai ($last_gentime) $last_unixtime $last_ip $last_country\n" if ($verbose > 1);
 			warn "$logtag: ...time_diff = $time_diff\n" if ($verbose > 1);
 			
-			# No idea where we are, so be safe
-			if (!$this_country) {
-				warn "$logtag: ...this_country unknown, passed\n" if ($verbose > 1);
-				last;
-			}
-			
 			# Whitelisted user
 			if (exists($safe_users{$user})) {
 				warn "$logtag: ...user $user is whitelisted safe, passed\n" if ($verbose > 1);
+				last;
+			}
+			
+			# Math problem
+			if ($time_diff <= 0) {
+				warn "$logtag: ...time_diff $time_diff <= 0 math oops and something wrong, passed\n" if ($verbose > 1);
+				last;	
+			}
+			
+			# No idea where we are, so be safe
+			if (!$this_country) {
+				warn "$logtag: ...this_country unknown, passed\n" if ($verbose > 1);
 				last;
 			}
 			
@@ -398,12 +404,6 @@ sub check_phishhook {
 			if ($last_ip =~ m/^137\.143\.78\.*/) {
 				warn "$logtag: ...last_ip $last_ip within vpn range, passed\n" if ($verbose > 1);
 				last; 	
-			}
-			
-			# Math problem
-			if ($time_diff <= 0) {
-				warn "$logtag: ...time_diff $time_diff <= 0 math oops and something wrong, passed\n" if ($verbose > 1);
-				last;	
 			}
 			
 			# Far enough time between hops, we're good
@@ -479,11 +479,11 @@ sub check_phishhook {
 			}
 			
 			# Domestic (US, CA, etc) logins do not count against us
-			if (exists($safe_countries{$prev_country})) {
-				warn "$logtag: ...prev_country $prev_country is safe, next\n" if ($verbose > 1);
-				$logins{safe}++;
-				next;
-			}
+			#if (exists($safe_countries{$prev_country})) {
+			#	warn "$logtag: ...prev_country $prev_country is safe, next\n" if ($verbose > 1);
+			#	$logins{safe}++;
+			#	next;
+			#}
 			
 			# VPN logins also do not count against us
 			if ($prev_ip =~ m/^137\.143\.78\.*/) {
