@@ -302,8 +302,8 @@ sub check_phishhook {
 		warn "$logtag: ...parsing test phishhook parameters from config" if ($verbose > 1);
 		my @testlog;
 		my $i=0;
-		while ($conf->exists('phishhook',"testlogin$i")) {
-			push (@testlog,$conf->val('phishhook',"testlogin$i"));
+		while ($conf->exists('phishhook',"testlog$i")) {
+			push (@testlog,$conf->val('phishhook',"testlog$i"));
 			$i++;
 		}
 		%skims = mine_qmail_skim_log("authuser=>$user",$tbegin_tai,\@testlog);
@@ -320,8 +320,7 @@ sub check_phishhook {
 	if ($test_user && $user eq $test_user) {
 		$this_tai = $test_tai;
 		$this_ip = $test_ip;
-	}
-	else {
+	} else {
 		$this_tai = unixtai64n(time());
 		$this_ip = $ENV{TCPREMOTEIP};
 	}
@@ -330,120 +329,125 @@ sub check_phishhook {
 	my $geoip = Geo::IP->new(GEOIP_STANDARD);
 	my $this_country = $geoip->country_code_by_addr($this_ip);
 	
+	warn "$logtag: ...this_login = $this_tai ($this_gentime) $this_unixtime $this_ip $this_country\n" if ($verbose > 1);
+	
 	# Add to the loggable log summary for next time
 	$logsum{ipaddr} = $this_ip;
 	$logsum{country} = $this_country;
 	
-	# The well-worn country-hop check
-	if ($conf->val('phishhook','country_hop')) {
-		# Last login, from most recent skim hit
-		my $last_login = $skims{$skim_keys[0]};
-		my $last_tai = $skim_keys[0];
-		my $last_ip = $$last_login{ipaddr};
-		my $last_gentime = tai64nlocal($last_tai);
-		my $last_unixtime = tai64nunix($last_tai);
-		my $last_country = $$last_login{country};
-		
-		my $time_diff = $this_unixtime - $last_unixtime;
-		my $hours_diff = $time_diff/60/60;
-		
-		if ($verbose) {
-			warn "$logtag: ...this_login = $this_tai ($this_gentime) $this_unixtime $this_ip $this_country\n" if ($verbose > 1);
-			warn "$logtag: ...last_login = $last_tai ($last_gentime) $last_unixtime $last_ip $last_country\n" if ($verbose > 1);
-			warn "$logtag: ...time_diff = $hours_diff\n" if ($verbose > 1);
-		}
-		
-		# No idea where we are, so be safe
-		if (!$this_country) {
-			warn "$logtag: ...this country unknown, passed\n" if ($verbose > 1);
-			return;
-		}
-		
-		# Whitelisted user
-		if (exists($safe_users{$user})) {
-			warn "$logtag: ...user $user is whitelisted safe, passed\n" if ($verbose > 1);
-			return;
-		}
-		
-		# We don't have a prior login, so we're good
-		if (!$last_country) {
-			warn "$logtag: ...no prior login or last country unknown, passed\n" if ($verbose > 1);
-			return;
-		}
-		
-		# Haven't met a domestic (US, CA, etc) phisher yet
-		if (exists($safe_countries{$this_country})) {
-			warn "$logtag: ...this country $this_country is safe, passed\n" if ($verbose > 1);
-			return;
-		}
-		
-		# Didn't start here (US, CA, etc) probably on vacation
-		if (!exists($safe_countries{$last_country})) {
-			warn "$logtag: ...last country $last_country not safe maybe vacation, passed\n" if ($verbose > 1);
-			return;
-		}
-		
-		# No hop, we're good
-		if ($last_country eq $this_country) {
-			warn "$logtag: ...last country $last_country eq this_country $this_country, passed\n" if ($verbose > 1);
-			return;
-		}
-		
-		# Last login from VPN range, we assume good so travelers do not get snagged
-		if ($last_ip =~ m/^137\.143\.78\.*/) {
-			warn "$logtag: ...last_ip $last_ip within vpn range, passed\n" if ($verbose > 1);
-			return; 	
-		}
-		
-		# Math problem
-		if ($hours_diff <= 0) {
-			warn "$logtag: ...hours_diff $hours_diff <= 0 math oops and something wrong, passed\n" if ($verbose > 1);
-			return;	
-		}
-		
-		# Far enough time between hops, we're good
-		my $hours_lapse = $conf->val('phishhook','hours_lapse');
-		if ($hours_diff > $hours_lapse) {
-			warn "$logtag: ...hours_diff $hours_diff > hours_lapse $hours_lapse, passed\n" if ($verbose > 1);
-			return;
-		}
+	# Phish logic.  Two tests.  Both tests overlap where they can up to this 
+	# point, but they both make a few different assumptions and it seems best 
+	# not to combine them completely.
 	
-		# If we get here: 
-		#  - the user is not in the US,
-		#  - the user has logged in in recent history,
-		#  - the user is in a different country than they were last in,
-		#  - the last login was not from the campus vpn range,
-		#  - it has been less than the specified hours since the user was in the last country
-		# 
-		# We want to:
-		#  - run a perl script that will
-		#   + Create a ticket
-		#   + FWBLACKLIST the current IP address
-		#   + Scramble their password
-		#   + Add them to the 'phish' group
-		#  - block this session
-		
-		$checks_failed{phishhook} = 1;
-		if ($checks_dryrun{phishhook}) {
-			warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country\n";
-			warn "$logtag: BLOCK DRYRUN phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#4.3.0)\n";
-		} else {
-			# snag the user
-			my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country");
-			$exitval >>= 8;
-			warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country: $exitval\n";
-			bail("$logtag: BLOCK phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff hours (#4.3.0)\n",111);
+	# The old country-hop check, testing for domestic->remote within interval.
+	# This is in a one-element loop just so we can 'last' out of it and still
+	# hit the hop check after it.
+	if ($conf->val('phishhook','country_hop')) {
+		foreach my $tai ($skim_keys[0]) {
+			my $last_country = $skims{$tai}{country};
+			my $last_ip = $skims{tai}{ipaddr};
+			my $last_gentime = tai64nlocal($tai);
+			my $last_unixtime = tai64nunix($tai);
+			
+			my $time_diff = $this_unixtime - $last_unixtime;
+			my $hours_diff = $time_diff/60/60;
+			
+			warn "$logtag: ...last_login = $tai ($last_gentime) $last_unixtime $last_ip $last_country\n" if ($verbose > 1);
+			warn "$logtag: ...time_diff = $time_diff\n" if ($verbose > 1);
+			
+			# No idea where we are, so be safe
+			if (!$this_country) {
+				warn "$logtag: ...this country unknown, passed\n" if ($verbose > 1);
+				last;
+			}
+			
+			# Whitelisted user
+			if (exists($safe_users{$user})) {
+				warn "$logtag: ...user $user is whitelisted safe, passed\n" if ($verbose > 1);
+				last;
+			}
+			
+			# We don't have a prior login, so we're good
+			if (!$last_country) {
+				warn "$logtag: ...no prior login or last country unknown, passed\n" if ($verbose > 1);
+				last;
+			}
+			
+			# Haven't met a domestic (US, CA, etc) phisher yet
+			if (exists($safe_countries{$this_country})) {
+				warn "$logtag: ...this country $this_country is safe, passed\n" if ($verbose > 1);
+				last;
+			}
+			
+			# Didn't start here (US, CA, etc) probably on vacation, but we will count below
+			if (!exists($safe_countries{$last_country})) {
+				warn "$logtag: ...last country $last_country not safe maybe vacation, passed\n" if ($verbose > 1);
+				return;
+			}
+			
+			# No hop, we're good
+			if ($last_country eq $this_country) {
+				warn "$logtag: ...last country $last_country eq this_country $this_country, passed\n" if ($verbose > 1);
+				last;
+			}
+			
+			# Last login from VPN range, we assume good so travelers do not get snagged
+			if ($last_ip =~ m/^137\.143\.78\.*/) {
+				warn "$logtag: ...last_ip $last_ip within vpn range, passed\n" if ($verbose > 1);
+				last; 	
+			}
+			
+			# Math problem
+			if ($time_diff <= 0) {
+				warn "$logtag: ...time_diff $time_diff <= 0 math oops and something wrong, passed\n" if ($verbose > 1);
+				last;	
+			}
+			
+			# Far enough time between hops, we're good
+			# It should not even be possible to hit this anymore since we are 
+			# now pulling in only those log hits that are within the interval
+			# in the first place, but for good measure.
+			my $interval = $conf->val('phishhook','interval');
+			if ($time_diff > $interval) {
+				warn "$logtag: ...time_diff $time_diff > interval $interval, passed\n" if ($verbose > 1);
+				return;
+			}
+			
+			# If we get here: 
+			#  - the user is not in the US,
+			#  - the user has logged in in recent history,
+			#  - the user is in a different country than they were last in,
+			#  - the last login was not from the campus vpn range,
+			#  - it has been less than the specified hours since the user was in the last country
+			# 
+			# We want to:
+			#  - run a perl script that will
+			#   + Create a ticket
+			#   + FWBLACKLIST the current IP address
+			#   + Scramble their password
+			#   + Add them to the 'phish' group
+			#  - block this session
+			
+			$checks_failed{phishhook} = 1;
+			if ($checks_dryrun{phishhook}) {
+				warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country\n";
+				warn "$logtag: BLOCK DRYRUN phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#4.3.0)\n";
+			}
+			else {
+				# snag the user
+				my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country");
+				$exitval >>= 8;
+				warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country: $exitval\n";
+				bail("$logtag: BLOCK phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff hours (#4.3.0)\n",111);
+			}
 		}
 	}
 	
-	# The country-count check
+	# The new country-count check, counting the number of countries in interval.
 	if ($conf->val('phishhook','country_count') > 0) {
-		my %countries;	# to keep track
+		my %seen;	# for lookup
 		my @countries;	# to log in order
-		my $bad_count;
-		my $safe_count;
-		my $unknown_count;
-		my $vpn_count;
+		my %logins;
 		foreach my $tai (@skim_keys) {
 			my $prev_country = $skims{$tai}{country};
 			my $prev_ip = $skims{tai}{ipaddr};
@@ -454,58 +458,71 @@ sub check_phishhook {
 				warn "$logtag: ...prev_login = $tai ($prev_gentime) $prev_unixtime $prev_ip $prev_country\n" if ($verbose > 1);
 			}
 			
-			# Whitelisted user
+			# Whitelisted user, no point in continuing
 			if (exists($safe_users{$user})) {
 				warn "$logtag: ...user $user is whitelisted safe, passed\n" if ($verbose > 1);
-				return;
+				last;
 			}
 			
-			# We don't have a prior login, so we're good
+			# We don't know this previous country, next
 			if (!$prev_country) {
-				warn "$logtag: ...last country unknown, next\n" if ($verbose > 1);
-				$unknown_count++;
+				warn "$logtag: ...prev_country unknown, next\n" if ($verbose > 1);
+				$logins{unknown}++;
 				next;
 			}
 			
-			# Haven't met a domestic (US, CA, etc) phisher yet
+			# Domestic (US, CA, etc) logins do not count against us
 			if (exists($safe_countries{$prev_country})) {
-				warn "$logtag: ...previous country $prev_country is safe, next\n" if ($verbose > 1);
-				$safe_count++;
+				warn "$logtag: ...prev_country $prev_country is safe, next\n" if ($verbose > 1);
+				$logins{safe}++;
 				next;
 			}
 			
-			# Last login from VPN range, we assume good so travelers do not get snagged
+			# VPN logins also do not count against us
 			if ($prev_ip =~ m/^137\.143\.78\.*/) {
 				warn "$logtag: ...previous ip $prev_ip within vpn range, next\n" if ($verbose > 1);
-				$vpn_count++;
+				$logins{vpn}++;
 				next; 	
 			}
 			
-			# It is not a safe country or vpn but we already accounted for it
-			if (exists($countries{$prev_country})) {
-				warn "$logtag: ...previous country $prev_country already accounted for, next\n" if ($verbose > 1);
-				$bad_count++;
+			# Unsafe but already seen
+			if (exists($seen{$prev_country})) {
+				warn "$logtag: ...prev_country $prev_country already seen, next\n" if ($verbose > 1);
+				$logins{bad}++;
 				next;
 			}
 			
-			# A new bad country
-			warn "$logtag: ...previous country $prev_country outside safe zone, listing\n" if ($verbose > 1);
-			$countries{$prev_country}++;
+			# A new unsafe country
+			warn "$logtag: ...prev_country $prev_country outside safe zone, counting\n" if ($verbose > 1);
+			$seen{$prev_country}++;
 			push (@countries,$prev_country);
-			$bad_count++;
+			$logins{bad}++;
+			
+			# If we fall into the next if statement: 
+			#  - the user has logged in in recent history,
+			#  - the user has logged in from too many unsafe countries within the interval
+			#
+			# We want to:
+			#  - run a perl script that will
+			#   + Create a ticket
+			#   + FWBLACKLIST the current IP address
+			#   + Scramble their password
+			#   + Add them to the 'phish' group
+			#  - block this session
 			
 			# Have we hit too many countries?
 			if (scalar(@countries) >= $conf->val('phishhook','country_count')) {
+				my $country_count = scalar(@countries);
 				$checks_failed{phishhook} = 1;
 				if ($checks_dryrun{phishhook}) {
 					warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $this_gentime $this_ip $this_country\n";
-					warn "$logtag: BLOCK DRYRUN phishook user $user for too many country-hops: $bad_count (#4.3.0)\n";
+					warn "$logtag: BLOCK DRYRUN phishook user $user for too many country-hops: @countries $country_count (#4.3.0)\n";
 				} else {
 					# snag the user
 					my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip $this_gentime $this_ip $this_country");
 					$exitval >>= 8;
 					warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $this_gentime $this_ip $this_country: $exitval\n";
-					bail("$logtag: BLOCK phishook user $user for too many country-hops: $bad_count (#4.3.0)\n",111);
+					bail("$logtag: BLOCK phishook user $user for too many country-hops: @countries ($country_count) (#4.3.0)\n",111);
 				}
 			}
 		}
@@ -613,7 +630,7 @@ sub mine_qmail_skim_log {
 	my ($str,$tbegin_tai,$testlog) = @_;
 	return if (!$str || !$tbegin_tai);
 	
-	if (!$testlog) {
+	unless ($testlog) {
 		# Get list of logs whose TAI-stamped filename indicates they were updated 
 		# more recently than our begin time.  Relying on the filename is less 
 		# reliable than examining the tail of every log, since the stamp on the log
@@ -626,19 +643,19 @@ sub mine_qmail_skim_log {
 			if ($l =~ m/^@/) {      # @400000004f67d6612991d2a4.s
 				my $lfile_tai = $l; $lfile_tai =~ s/\..*//;     # eliminate trailing .s
 				if (($lfile_tai cmp $tbegin_tai) == 1) {        # lfile time greater (more recent) than tbegin therefore in bounds
-					warn "$logtag: ......found log $l (".tai64nlocal($l).") in-bounds\n" if ($verbose > 2);
+					warn "$logtag: ......log file $l (".tai64nlocal($lfile_tai).") in-bounds\n" if ($verbose > 2);
 					push (@logs,$l);
 				} else {
-					warn "$logtag: ......found log $l (".tai64nlocal($l).") out-of-bounds\n" if ($verbose > 2);
+					warn "$logtag: ......log file $l (".tai64nlocal($lfile_tai).") out-of-bounds\n" if ($verbose > 2);
 				}
 			}
 		}
 		closedir (LOGD);
 		
-		# Sorts naturally from oldest to most recent
+		# Sorts naturally from oldest to most recent, and we then we always add current 
 		@logs = sort(@logs);
-		
-		# Cannot forget the current log since we will be there 99% of the time
+		my @stat = stat("$qmail_logs/current") or warn "Cannot stat $qmail_logs/current\n";
+		warn "$logtag: ......log file current (".tai64nlocal(unixtai64n($stat[9])).") in-bounds\n" if ($verbose > 2);	# asinine
 		push (@logs,'current');
 	
 		# We have isolated all the log files in bounds by their timestamp
@@ -653,13 +670,19 @@ sub mine_qmail_skim_log {
 				# config=>/etc/qmail-skim-test.conf /
 				# from=>qmailskim@potsdam.edu /
 				# mailfrom=>qmailskim@potsdam.edu rcptto=>1
-				if (m/qmail-skim.pl.*SKIM .*$str/) {
+				if (m/qmail-skim.pl.*SKIM .*$str/ && ! m/DEBUG/) {
 					m/(\S+) qmail-skim\.pl.* SKIM (.*)/;
-					foreach (split(/\s+/,$2)) {
-						my ($key,$val) = split(/=>/,$_);
-						$skims{$1}{$key} = $val;
+					my $lentry_tai = $1;
+					my $lentry_data = $2;
+					if (($lentry_tai cmp $tbegin_tai) == 1) {        # lentry time greater (more recent) than tbegin therefore in bounds
+						warn "$logtag: ......log entry $lentry_tai (".tai64nlocal($lentry_tai).") [$lentry_data] in-bounds\n" if ($verbose > 2);
+						foreach (split(/\s+/,$lentry_data)) {
+							my ($key,$val) = split(/=>/,$_);
+							$skims{$1}{$key} = $val;
+						}
+					} else {
+						warn "$logtag: ......log entry $lentry_tai (".tai64nlocal($lentry_tai).") [$lentry_data] out-of-bounds\n" if ($verbose > 2);
 					}
-					warn "$logtag: ......$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
 				}
 			}
 			close (LOG);
@@ -673,13 +696,16 @@ sub mine_qmail_skim_log {
 			# config=>/etc/qmail-skim-test.conf /
 			# from=>qmailskim@potsdam.edu /
 			# mailfrom=>qmailskim@potsdam.edu rcptto=>1
-			if (m/qmail-skim.pl.*SKIM .*$str/) {
+			if (m/qmail-skim.pl.*SKIM .*$str/ && ! m/DEBUG/) {
 				m/(\S+) qmail-skim\.pl.* SKIM (.*)/;
-				foreach (split(/\s+/,$2)) {
+				my $lentry_tai = $1;
+				my $lentry_data = $2;
+				# no time check just take all of the test entries
+				warn "$logtag: ......log entry $lentry_tai (".tai64nlocal($lentry_tai).") [$lentry_data] in-test\n" if ($verbose > 2);
+				foreach (split(/\s+/,$lentry_data)) {
 					my ($key,$val) = split(/=>/,$_);
 					$skims{$1}{$key} = $val;
 				}
-				warn "$logtag: ......$1 (".tai64nlocal($1).") $2\n" if ($verbose > 2);
 			}
 		}
 		return %skims;
