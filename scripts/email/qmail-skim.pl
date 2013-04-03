@@ -451,19 +451,36 @@ sub check_phishhook {
 		my %seen;	# for lookup
 		my @countries;	# to log in order
 		my %logins;
+		
+		# add this login info to the skims hash so it hits the logic below
+		$skims{$this_tai}{country} = $this_country;
+		unshift (@skim_keys,$this_tai);
+		
+		# now iterate through previous logins checking history
+		my $i = 0;
 		foreach my $tai (@skim_keys) {
 			my $prev_country = $skims{$tai}{country};
 			my $prev_ip = $skims{tai}{ipaddr};
 			my $prev_gentime = tai64nlocal($tai);
 			my $prev_unixtime = tai64nunix($tai);
 			
+			# just for logging
+			my $this_or_prev = $i == 0 ? "this_login" : "prev_login";
+			$i++;
+			
+			# Sanity, we won't allow snagging on just one or two hops period
+			if ($conf->val('phishhook','country_count') < 3) {
+				warn "$logtag: ...country_count configuration not sane, too few hops\n" if ($verbose > 1);
+				last;	
+			}
+			
 			# No prior login
-			if (!$tai) {
+			if (!$tai || scalar(@skim_keys <= 1)) {
 				warn "$logtag: ...no previous logins, passed\n" if ($verbose > 1);
 				last;
 			}
 			
-			warn "$logtag: ...prev_login = $tai ($prev_gentime) $prev_unixtime $prev_ip $prev_country\n" if ($verbose > 1);
+			warn "$logtag: ...$this_or_prev = $tai ($prev_gentime) $prev_unixtime $prev_ip $prev_country\n" if ($verbose > 1);
 			
 			# Whitelisted user, no point in continuing
 			if (exists($safe_users{$user})) {
@@ -473,34 +490,34 @@ sub check_phishhook {
 			
 			# We don't know this previous country, next
 			if (!$prev_country) {
-				warn "$logtag: ...prev_country unknown, next\n" if ($verbose > 1);
+				warn "$logtag: ...$this_or_prev country unknown, next\n" if ($verbose > 1);
 				$logins{unknown}++;
 				next;
 			}
 			
 			# Domestic (US, CA, etc) logins do not count against us
-			#if (exists($safe_countries{$prev_country})) {
-			#	warn "$logtag: ...prev_country $prev_country is safe, next\n" if ($verbose > 1);
-			#	$logins{safe}++;
-			#	next;
-			#}
+			if (exists($safe_countries{$prev_country})) {
+				warn "$logtag: ...$this_or_prev country $prev_country is safe, next\n" if ($verbose > 1);
+				$logins{safe}++;
+				next;
+			}
 			
 			# VPN logins also do not count against us
 			if ($prev_ip =~ m/^137\.143\.78\.*/) {
-				warn "$logtag: ...prev_ip $prev_ip within vpn range, next\n" if ($verbose > 1);
+				warn "$logtag: ...$this_or_prev ip $prev_ip within vpn range, next\n" if ($verbose > 1);
 				$logins{vpn}++;
 				next; 	
 			}
 			
 			# Unsafe but already seen
 			if (exists($seen{$prev_country})) {
-				warn "$logtag: ...prev_country $prev_country already seen, next\n" if ($verbose > 1);
+				warn "$logtag: ...$this_or_prev country $prev_country already seen, next\n" if ($verbose > 1);
 				$logins{bad}++;
 				next;
 			}
 			
 			# A new unsafe country
-			warn "$logtag: ...prev_country $prev_country outside safe zone, counting\n" if ($verbose > 1);
+			warn "$logtag: ...$this_or_prev country $prev_country outside safe zone, counting\n" if ($verbose > 1);
 			$seen{$prev_country}++;
 			push (@countries,$prev_country);
 			$logins{bad}++;
@@ -523,7 +540,7 @@ sub check_phishhook {
 				$checks_failed{phishhook} = 1;
 				if ($checks_dryrun{phishhook}) {
 					warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $this_gentime $this_ip $this_country\n";
-					warn "$logtag: BLOCK DRYRUN phishook user $user for too many country-hops: @countries $country_count (#4.3.0)\n";
+					warn "$logtag: BLOCK DRYRUN phishook user $user for too many country-hops: @countries ($country_count) (#4.3.0)\n";
 				} else {
 					# snag the user
 					my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip $this_gentime $this_ip $this_country");
@@ -533,7 +550,7 @@ sub check_phishhook {
 				}
 			}
 		}
-		warn "$logtag: ...country-hops: @countries\n" if ($verbose > 1);
+		warn "$logtag: ...country-count: ".scalar(@countries)." ".join(',',@countries)."\n" if ($verbose > 1);
 	}
 }
 
