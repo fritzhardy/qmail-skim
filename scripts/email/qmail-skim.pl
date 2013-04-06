@@ -217,22 +217,20 @@ sub check_ratelimit {
 	if (!$mailfrom) { return; }
 	warn "$logtag: Check ratelimit: mailfrom $mailfrom\n" if $verbose;
 	
-	my $maxrcptto = $conf->val('ratelimit','maxrcptto');
-	my %skims = mine_qmail_skim_log("mailfrom=>$mailfrom");
-	
 	# figure out the beginning interval time after which we care about
 	my $tbegin = time() - $conf->val('ratelimit','interval');
 	my $tbegin_tai = unixtai64n($tbegin);
 	print STDERR "$logtag: ...time_begin = $tbegin_tai (".tai64nlocal($tbegin_tai).") $tbegin\n" if ($verbose > 1);
 	
+	my $maxrcptto = $conf->val('ratelimit','maxrcptto');
+	my %skims = mine_qmail_skim_log("mailfrom=>$mailfrom",$tbegin_tai);
+	
 	# iterate over logs grabbing only those within interval
 	my $rcpttos;
-	foreach my $tai (sort(keys(%skims))) {
+	foreach my $tai (reverse(sort(keys(%skims)))) {
 		my $tunix = tai2unix($tai);
-		if ($tunix > $tbegin) {
-			print STDERR "$logtag: ...within_scope = $tai (".tai64nlocal($tai).") $tunix $skims{$tai}{mailfrom} $skims{$tai}{rcptto}\n" if ($verbose > 1);
-			$rcpttos += $skims{$tai}{rcptto};
-		}
+		print STDERR "$logtag: ...prev_message = $tai (".tai64nlocal($tai).") $tunix $skims{$tai}{mailfrom} $skims{$tai}{rcptto}\n" if ($verbose > 1);
+		$rcpttos += $skims{$tai}{rcptto};
 	}
 	
 	$logsum{ratelimit} = $rcpttos;
@@ -338,11 +336,11 @@ sub check_phishhook {
 	
 	# The old country-hop check, testing for domestic->remote within interval.
 	# This is in a one-element loop just so we can 'last' out of it and still
-	# hit the hop check after it.
+	# hit the count check after it.
 	if ($conf->val('phishhook','country_hop')) {
 		foreach my $tai ($skim_keys[0]) {
 			my $last_country = $skims{$tai}{country};
-			my $last_ip = $skims{tai}{ipaddr};
+			my $last_ip = $skims{$tai}{ipaddr};
 			my $last_gentime = tai64nlocal($tai);
 			my $last_unixtime = tai64nunix($tai);
 			
@@ -432,16 +430,17 @@ sub check_phishhook {
 			#  - block this session
 			
 			$checks_failed{phishhook} = 1;
+			my $msg = "country-hop from $last_country ($last_ip) at $last_gentime to $this_country ($this_ip) at $this_gentime in $time_diff"."s ($hours_diff"."h)";
 			if ($checks_dryrun{phishhook}) {
-				warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country\n";
-				warn "$logtag: BLOCK DRYRUN phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff (#4.3.0)\n";
+				warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
+				warn "$logtag: BLOCK DRYRUN phishhook user $user: $msg (#4.3.0)\n";
 			}
 			else {
 				# snag the user
-				my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country");
+				my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
 				$exitval >>= 8;
-				warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $last_gentime $last_ip $last_country: $exitval\n";
-				bail("$logtag: BLOCK phishook user $user for country-hopping from $last_ip ($last_country) to $this_ip ($this_country) in $hours_diff hours (#4.3.0)\n",111);
+				warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval\n";
+				bail("$logtag: BLOCK phishhook user $user: $msg (#4.3.0)\n",111);
 			}
 		}
 	}
@@ -460,7 +459,7 @@ sub check_phishhook {
 		my $i = 0;
 		foreach my $tai (@skim_keys) {
 			my $prev_country = $skims{$tai}{country};
-			my $prev_ip = $skims{tai}{ipaddr};
+			my $prev_ip = $skims{$tai}{ipaddr};
 			my $prev_gentime = tai64nlocal($tai);
 			my $prev_unixtime = tai64nunix($tai);
 			
@@ -468,7 +467,7 @@ sub check_phishhook {
 			my $this_or_prev = $i == 0 ? "this_login" : "prev_login";
 			$i++;
 			
-			# Sanity, we won't allow snagging on just one or two hops period
+			# Sanity, we won't allow snagging on just one or two countries period
 			if ($conf->val('phishhook','country_count') < 3) {
 				warn "$logtag: ...country_count configuration not sane, too few hops\n" if ($verbose > 1);
 				last;	
@@ -538,19 +537,20 @@ sub check_phishhook {
 			if (scalar(@countries) >= $conf->val('phishhook','country_count')) {
 				my $country_count = scalar(@countries);
 				$checks_failed{phishhook} = 1;
+				my $msg = "country-count $country_count (".join(',',@countries).") exceeds limit ".$conf->val('phishhook','country_count')." within interval ".$conf->val('phishhook','interval')."s";
 				if ($checks_dryrun{phishhook}) {
-					warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $this_gentime $this_ip $this_country\n";
-					warn "$logtag: BLOCK DRYRUN phishook user $user for too many country-hops: @countries ($country_count) (#4.3.0)\n";
+					warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
+					warn "$logtag: BLOCK DRYRUN phishhook user $user: $msg (#4.3.0)\n";
 				} else {
 					# snag the user
-					my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip $this_gentime $this_ip $this_country");
+					my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
 					$exitval >>= 8;
-					warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $this_gentime $this_ip $this_country: $exitval\n";
-					bail("$logtag: BLOCK phishook user $user for too many country-hops: @countries ($country_count) (#4.3.0)\n",111);
+					warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval\n";
+					bail("$logtag: BLOCK phishhook user $user: $msg (#4.3.0)\n",111);
 				}
 			}
 		}
-		warn "$logtag: ...country-count: ".scalar(@countries)." ".join(',',@countries)."\n" if ($verbose > 1);
+		warn "$logtag: ...country-count: ".scalar(@countries)." (".join(',',@countries).")\n" if ($verbose > 1);
 	}
 }
 
@@ -707,7 +707,7 @@ sub mine_qmail_skim_log {
 					warn "$logtag: ......in-bounds $lentry_tai (".tai64nlocal($lentry_tai).") $lentry_data\n" if ($verbose > 2);
 					foreach (split(/\s+/,$lentry_data)) {
 						my ($key,$val) = split(/=>/,$_);
-						$skims{$1}{$key} = $val;
+						$skims{$lentry_tai}{$key} = $val;
 					}
 				} else {
 					warn "$logtag: ......out-of-bounds $lentry_tai (".tai64nlocal($lentry_tai).") $lentry_data\n" if ($verbose > 2);
@@ -719,6 +719,7 @@ sub mine_qmail_skim_log {
 	return %skims;
 }
 
+# Deprecated, check_phishhook has been re-written around mine_qmail_skim_log
 # Parse qmail logs looking for last qmail-smtpd smtp-auth login 
 # by given username, returning ip address and timestamp.
 # Returns list of this and last logins in form TAI timestamp and ip space-separated
