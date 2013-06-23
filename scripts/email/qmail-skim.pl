@@ -30,9 +30,6 @@ my $qmail_logs = $qmail_logs{$ENV{TCPLOCALPORT}};
 my %checks_failed;	# store failed checks, list since dryrun can cause multiple fails
 my %logsum;			# build a hash summary of all info bits
 
-# lest we loop infinitely
-delete($ENV{QMAILQUEUE});
-
 # get the data off of the file descriptors
 my $message = get_message();
 my $envelope = get_envelope();
@@ -70,18 +67,45 @@ main: {
 	# breakdown the envelope
 	my ($mailfrom,$rcptto) = parse_envelope($envelope);
 	
+	# look for webmail bits
+	my ($webmail,$webuser,$webip);
+	if ($conf->val('global','webmail_aware')) {
+		($webmail,$webuser,$webip) = parse_header_received_webmail($email->header("Received"));
+	} 
+	
+	# determine whether we have an authuser
+	my $authuser = '';
+	if ($ENV{SMTP_AUTH_USER}) {	# precedence
+		$authuser = $ENV{SMTP_AUTH_USER};
+	} elsif ($webuser) {
+		$authuser = $webuser;	
+	}
+	
+	# determine which client ip we care about
+	my $ipaddr = '';
+	if ($webip) {
+		$ipaddr = $webip;	
+	} elsif ($ENV{TCPREMOTEIP}) {
+		$ipaddr	= $ENV{TCPREMOTEIP};
+	}
+	
 	# debug
 	debug($email,\@headers) if $verbose > 2;
 	
+	# lest we loop infinitely
+	delete($ENV{QMAILQUEUE});
+	
 	# build log summary up front in case a check bails
-	$logsum{authuser} = $ENV{SMTP_AUTH_USER} if $ENV{SMTP_AUTH_USER};
+	$logsum{authuser} = $authuser if $authuser;
+	$logsum{webmail} = $webmail if $webmail;
+	$logsum{ipaddr} = $ipaddr;
 	$logsum{mailfrom} = $mailfrom;
 	$logsum{rcptto} = scalar(split(/,/,$rcptto));
 	$logsum{from} = $email->header("From");
 	$logsum{from} =~ s/\s/_/g;
 	
 	# run checks and potentially produce more log summary hits
-	check_phishhook($ENV{SMTP_AUTH_USER}) if $checks_enabled{phishhook};
+	check_phishhook($authuser,$ipaddr) if $checks_enabled{phishhook};
 	check_phishfrom($mailfrom,$rcptto,$email->header("from")) if $checks_enabled{phishfrom};
 	check_ratelimit($mailfrom) if $checks_enabled{ratelimit};
 	check_envelope($mailfrom,$rcptto) if ($checks_enabled{envelope});
@@ -267,9 +291,10 @@ sub check_phishfrom {
 
 # Phishhook check analyzing country and time of last login
 sub check_phishhook {
-	my ($user) = @_;
+	my ($user,$ipaddr) = @_;
 	warn "$logtag: Check phishhook: authuser $user\n" if $verbose;
 	if (!$user) { return; }
+	if (!$ipaddr) { return; }
 	
 	# Used below in checks to exclude current domestic logins and to 
 	# exclude foreign to foreign hops as travellers
@@ -317,7 +342,7 @@ sub check_phishhook {
 		$this_ip = $test_ip;
 	} else {
 		$this_tai = unixtai64n(time());
-		$this_ip = $ENV{TCPREMOTEIP};
+		$this_ip = $ipaddr;
 	}
 	my $this_gentime = tai64nlocal($this_tai);
 	my $this_unixtime = tai64nunix($this_tai);
@@ -327,7 +352,6 @@ sub check_phishhook {
 	warn "$logtag: ...this_login = $this_tai ($this_gentime) $this_unixtime $this_ip $this_country\n" if ($verbose > 1);
 	
 	# Add to the loggable log summary for next time
-	$logsum{ipaddr} = $this_ip;
 	$logsum{country} = $this_country;
 	
 	# Phish logic.  Two tests.  Both tests overlap where they can up to this 
@@ -792,6 +816,25 @@ sub parse_envelope {
 	}
 	
 	return ($mailfrom,$rcptto);
+}
+
+# Parses received headers looking for signature webmail (squirrelmail)
+# bits to return sending authenticated username and ip address.
+# Returns nothing if no sqirrelmail match.
+#
+# Email::Simple parses headers like this down to one line for us:
+#
+# Received: from 137.143.78.3
+#      (SquirrelMail authenticated user buffy)
+#      by bearmaildev.potsdam.edu with HTTP;
+#      Sat, 22 Jun 2013 22:55:50 -0400 
+sub parse_header_received_webmail {
+	foreach (@_) {
+		#from 137.143.78.3 (SquirrelMail authenticated user buffy) by bearmaildev.potsdam.edu with HTTP; Sat, 22 Jun 2013 23:38:09 -0400
+		if (m/from (\S+) \(SquirrelMail authenticated user (\S+)\).*/) {
+			return ("squirrelmail",$2,$1);	
+		}
+	}
 }
 
 # Qmail-inject the message.  We pass -f and -A so we can ensure we send from 
