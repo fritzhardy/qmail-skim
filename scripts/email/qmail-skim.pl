@@ -106,7 +106,7 @@ main: {
 	
 	# run checks and potentially produce more log summary hits
 	check_phishhook($authuser,$ipaddr) if $checks_enabled{phishhook};
-	check_phishfrom($mailfrom,$rcptto,$email->header("from")) if $checks_enabled{phishfrom};
+	check_phishfrom($authuser,$mailfrom,$rcptto,$ipaddr) if $checks_enabled{phishfrom};
 	check_phishlimit($authuser,$ipaddr) if $checks_enabled{phishlimit};
 	check_ratelimit($mailfrom) if $checks_enabled{ratelimit};
 	check_envelope($mailfrom,$rcptto) if ($checks_enabled{envelope});
@@ -238,19 +238,36 @@ sub check_headers {
 
 # Phishfrom check analyzing envelope sender, from header, number of envelope recipients
 sub check_phishfrom {
-	my ($mailfrom,$rcptto,$from) = @_;
+	my ($authuser,$mailfrom,$rcptto,$ipaddr) = @_;
+	if (!$authuser) { return; }
+	if (!$mailfrom) { return; }
+	if (!$rcptto) { return; }
+	if (!$ipaddr) { return; }
+	
 	my $numrcpttos = scalar(split(/,/,$rcptto));
-	my $from_sane = $from;	# Jeff Hardy <xhardy1@potsdam.edu>
+	
+	# Jeff Hardy <xhardy1@potsdam.edu> becomes xhardy1
+	my $from_sane = $mailfrom;
 	$from_sane =~ s/.*<//;
 	$from_sane =~ s/>.*//;
-	warn "$logtag: Check phishfrom: mailfrom $mailfrom from $from to $numrcpttos recipients\n" if $verbose;
+	$from_sane =~ s/\@.*//;
+	
+	warn "$logtag: Check phishfrom: authuser $authuser mailfrom $mailfrom to $numrcpttos recipients\n" if $verbose;
 	warn "$logtag: ...from_sane = $from_sane\n" if $verbose > 1;
-	if (($mailfrom ne $from_sane) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
+	
+	# determine fate
+	if (($authuser ne $from_sane) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
 		$checks_failed{phishfrom} = 1;
+		my $msg = "authuser $authuser != $mailfrom and > ".$conf->val('phishfrom','maxrcptto')." recipients";
 		if ($checks_dryrun{phishfrom}) {
-			warn "$logtag: BLOCK_DRYRUN phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients (#4.3.0)\n";
+			warn "$logtag: SNAG_DRYRUN phishfrom: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
+			warn "$logtag: BLOCK_DRYRUN phishfrom: $msg (#4.3.0)\n";
 		} else {
-			bail("$logtag: BLOCK phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients (#4.3.0)\n",111);
+			# snag the user
+			my $exitval = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
+			$exitval >>= 8;
+			warn "$logtag: SNAG phishfrom: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval\n";
+			bail("$logtag: BLOCK phishfrom: $msg (#4.3.0)\n",111);
 		}
 	}
 }
@@ -585,7 +602,7 @@ sub check_phishlimit {
 			my $exitval = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
 			$exitval >>= 8;
 			warn "$logtag: SNAG phishlimit authuser $authuser: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval\n";
-			bail("$logtag: BLOCK phishlimit authuser $authuser:$msg (#4.3.0)\n",111);
+			bail("$logtag: BLOCK phishlimit authuser $authuser: $msg (#4.3.0)\n",111);
 		}
 	}
 }
