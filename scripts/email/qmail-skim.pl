@@ -96,6 +96,7 @@ main: {
 	delete($ENV{QMAILQUEUE});
 	
 	# build log summary up front in case a check bails
+	$logsum{ipaddr} = $ipaddr;
 	$logsum{authuser} = $authuser if $authuser;
 	$logsum{webmail} = $webmail if $webmail;
 	$logsum{mailfrom} = $mailfrom;
@@ -106,6 +107,7 @@ main: {
 	# run checks and potentially produce more log summary hits
 	check_phishhook($authuser,$ipaddr) if $checks_enabled{phishhook};
 	check_phishfrom($mailfrom,$rcptto,$email->header("from")) if $checks_enabled{phishfrom};
+	check_phishlimit($authuser,$ipaddr) if $checks_enabled{phishlimit};
 	check_ratelimit($mailfrom) if $checks_enabled{ratelimit};
 	check_envelope($mailfrom,$rcptto) if ($checks_enabled{envelope});
 	check_headers($email,\@headers) if ($checks_enabled{headers});
@@ -143,7 +145,7 @@ sub check_body {
 		if ($body =~ m/$bchk/) {
 			$checks_failed{body} = 1;
 			if ($checks_dryrun{body}) {
-				warn "$logtag: BLOCK DRYRUN body =~ $bchk (#4.3.0)\n";
+				warn "$logtag: BLOCK_DRYRUN body =~ $bchk (#4.3.0)\n";
 			} else {
 				bail("$logtag: BLOCK body =~ $bchk (#4.3.0)\n",111);
 			}
@@ -163,7 +165,7 @@ sub check_envelope {
 			if ($mailfrom =~ m/$mfchk/) {
 				$checks_failed{envelope} = 1;
 				if ($checks_dryrun{envelope}) {
-					warn "$logtag: BLOCK DRYRUN envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n";	
+					warn "$logtag: BLOCK_DRYRUN envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n";	
 				} else {
 					bail("$logtag: BLOCK envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n",111);
 				}
@@ -173,7 +175,7 @@ sub check_envelope {
 			if ($mailfrom eq $mfchk) {
 				$checks_failed{envelope} = 1;
 				if ($checks_dryrun{envelope}) {
-					warn "$logtag: BLOCK DRYRUN envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n";
+					warn "$logtag: BLOCK_DRYRUN envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n";
 				} else {
 					bail("$logtag: BLOCK envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n",111);
 				}
@@ -210,7 +212,7 @@ sub check_headers {
 					if ($hval =~ m/$hchk/) {	# match
 						$checks_failed{headers} = 1;
 						if ($checks_dryrun{headers}) {
-							warn "$logtag: BLOCK DRYRUN header $h $hval =~ $hchk (#4.3.0)\n";
+							warn "$logtag: BLOCK_DRYRUN header $h $hval =~ $hchk (#4.3.0)\n";
 						} else {
 							bail("$logtag: BLOCK header $h $hval =~ $hchk (#4.3.0)\n",111);
 						}
@@ -223,7 +225,7 @@ sub check_headers {
 					if ($hval eq $hchk) {
 						$checks_failed{headers} = 1;
 						if ($checks_dryrun{headers}) {
-							warn "$logtag: BLOCK DRYRUN header $h $hval == $hchk (#4.3.0)\n";
+							warn "$logtag: BLOCK_DRYRUN header $h $hval == $hchk (#4.3.0)\n";
 						} else {
 							bail("$logtag: BLOCK header $h $hval == $hchk (#4.3.0)\n",111);
 						}
@@ -234,7 +236,7 @@ sub check_headers {
 	}
 }
 
-# Phishhook check analyzing envelope sender, from header, number of envelope recipients
+# Phishfrom check analyzing envelope sender, from header, number of envelope recipients
 sub check_phishfrom {
 	my ($mailfrom,$rcptto,$from) = @_;
 	my $numrcpttos = scalar(split(/,/,$rcptto));
@@ -246,7 +248,7 @@ sub check_phishfrom {
 	if (($mailfrom ne $from_sane) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
 		$checks_failed{phishfrom} = 1;
 		if ($checks_dryrun{phishfrom}) {
-			warn "$logtag: BLOCK DRYRUN phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients (#4.3.0)\n";
+			warn "$logtag: BLOCK_DRYRUN phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients (#4.3.0)\n";
 		} else {
 			bail("$logtag: BLOCK phishfrom mailfrom $mailfrom != $from and greater than ".$conf->val('phishfrom','maxrcptto')." recipients (#4.3.0)\n",111);
 		}
@@ -316,7 +318,7 @@ sub check_phishhook {
 	warn "$logtag: ...this_login = $this_tai ($this_gentime) $this_unixtime $this_ip $this_country\n" if ($verbose > 1);
 	
 	# Add to the loggable log summary for next time
-	$logsum{ipaddr} = $ipaddr;
+	#$logsum{ipaddr} = $this_ip;		# already defined, but may be different if test_ip
 	$logsum{country} = $this_country;
 	
 	# Phish logic.  Two tests.  Both tests overlap where they can up to this 
@@ -421,8 +423,8 @@ sub check_phishhook {
 			$checks_failed{phishhook} = 1;
 			my $msg = "country-hop from $last_country ($last_ip) at $last_gentime to $this_country ($this_ip) at $this_gentime in $time_diff"."s ($hours_diff"."h)";
 			if ($checks_dryrun{phishhook}) {
-				warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
-				warn "$logtag: BLOCK DRYRUN phishhook user $user: $msg (#4.3.0)\n";
+				warn "$logtag: SNAG_DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
+				warn "$logtag: BLOCK_DRYRUN phishhook user $user: $msg (#4.3.0)\n";
 			}
 			else {
 				# snag the user
@@ -528,8 +530,8 @@ sub check_phishhook {
 				$checks_failed{phishhook} = 1;
 				my $msg = "country-count $country_count (".join(',',@countries).") exceeds limit ".$conf->val('phishhook','country_count')." within interval ".$conf->val('phishhook','interval')."s";
 				if ($checks_dryrun{phishhook}) {
-					warn "$logtag: SNAG DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
-					warn "$logtag: BLOCK DRYRUN phishhook user $user: $msg (#4.3.0)\n";
+					warn "$logtag: SNAG_DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
+					warn "$logtag: BLOCK_DRYRUN phishhook user $user: $msg (#4.3.0)\n";
 				} else {
 					# snag the user
 					my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
@@ -540,6 +542,51 @@ sub check_phishhook {
 			}
 		}
 		warn "$logtag: ...country-count: ".scalar(@countries)." (".join(',',@countries).")\n" if ($verbose > 1);
+	}
+}
+
+# Phishlimit check analyzing authuser and number of recipients over interval
+# NOTE: The number of rcpttos in the current session does not count against us, 
+# only past sessions, protecting against a legit, infrequent, one big send.
+sub check_phishlimit {
+	my ($authuser,$ipaddr) = @_;
+	if (!$authuser) { return; }
+	if (!$ipaddr) { return; }
+	
+	warn "$logtag: Check phishlimit: authuser $authuser\n" if $verbose;
+	
+	# figure out the beginning interval time after which we care
+	my $tbegin = time() - $conf->val('phishlimit','interval');
+	my $tbegin_tai = unixtai64n($tbegin);
+	print STDERR "$logtag: ...time_begin = $tbegin_tai (".tai64nlocal($tbegin_tai).") $tbegin\n" if ($verbose > 1);
+	
+	my $maxrcptto = $conf->val('phishlimit','maxrcptto');
+	my %skims = mine_qmail_skim_log("authuser=>$authuser",$tbegin_tai);
+	
+	# iterate over logs grabbing only those within interval
+	my $rcpttos;
+	foreach my $tai (reverse(sort(keys(%skims)))) {
+		my $tunix = tai2unix($tai);
+		print STDERR "$logtag: ...prev_message = $tai (".tai64nlocal($tai).") $tunix $skims{$tai}{authuser} $skims{$tai}{rcptto}\n" if ($verbose > 1);
+		$rcpttos += $skims{$tai}{rcptto};
+	}
+	
+	$logsum{phishlimit} = $rcpttos;
+	
+	# determine fate
+	if ($rcpttos > $conf->val('phishlimit','maxrcptto')) {
+		$checks_failed{phishlimit} = 1;
+		my $msg = "rcpttos greater than ".$conf->val('phishlimit','maxrcptto')." in interval ".$conf->val('phishlimit','interval')."s";
+		if ($checks_dryrun{phishlimit}) {
+			warn "$logtag: SNAG_DRYRUN phishlimit authuser $authuser: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
+			warn "$logtag: BLOCK_DRYRUN phishlimit authuser $authuser: $msg (#4.3.0)\n";
+		} else {
+			# snag the user
+			my $exitval = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
+			$exitval >>= 8;
+			warn "$logtag: SNAG phishlimit authuser $authuser: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval\n";
+			bail("$logtag: BLOCK phishlimit authuser $authuser:$msg (#4.3.0)\n",111);
+		}
 	}
 }
 
@@ -571,7 +618,7 @@ sub check_ratelimit {
 	if ($rcpttos > $conf->val('ratelimit','maxrcptto')) {
 		$checks_failed{ratelimit} = 1;
 		if ($checks_dryrun{ratelimit}) {
-			warn "$logtag: BLOCK DRYRUN ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n";
+			warn "$logtag: BLOCK_DRYRUN ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n";
 		} else {
 			bail("$logtag: BLOCK ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n",111);
 		}
