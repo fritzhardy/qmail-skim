@@ -98,7 +98,6 @@ main: {
 	# build log summary up front in case a check bails
 	$logsum{authuser} = $authuser if $authuser;
 	$logsum{webmail} = $webmail if $webmail;
-	$logsum{ipaddr} = $ipaddr;
 	$logsum{mailfrom} = $mailfrom;
 	$logsum{rcptto} = scalar(split(/,/,$rcptto));
 	$logsum{from} = $email->header("From");
@@ -235,41 +234,6 @@ sub check_headers {
 	}
 }
 
-# Ratelimit check analyzing envelope sender and number of recipients over interval
-sub check_ratelimit {
-	my ($mailfrom) = @_;
-	if (!$mailfrom) { return; }
-	warn "$logtag: Check ratelimit: mailfrom $mailfrom\n" if $verbose;
-	
-	# figure out the beginning interval time after which we care about
-	my $tbegin = time() - $conf->val('ratelimit','interval');
-	my $tbegin_tai = unixtai64n($tbegin);
-	print STDERR "$logtag: ...time_begin = $tbegin_tai (".tai64nlocal($tbegin_tai).") $tbegin\n" if ($verbose > 1);
-	
-	my $maxrcptto = $conf->val('ratelimit','maxrcptto');
-	my %skims = mine_qmail_skim_log("mailfrom=>$mailfrom",$tbegin_tai);
-	
-	# iterate over logs grabbing only those within interval
-	my $rcpttos;
-	foreach my $tai (reverse(sort(keys(%skims)))) {
-		my $tunix = tai2unix($tai);
-		print STDERR "$logtag: ...prev_message = $tai (".tai64nlocal($tai).") $tunix $skims{$tai}{mailfrom} $skims{$tai}{rcptto}\n" if ($verbose > 1);
-		$rcpttos += $skims{$tai}{rcptto};
-	}
-	
-	$logsum{ratelimit} = $rcpttos;
-	
-	# determine fate
-	if ($rcpttos > $conf->val('ratelimit','maxrcptto')) {
-		$checks_failed{ratelimit} = 1;
-		if ($checks_dryrun{ratelimit}) {
-			warn "$logtag: BLOCK DRYRUN ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n";
-		} else {
-			bail("$logtag: BLOCK ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n",111);
-		}
-	}
-}
-
 # Phishhook check analyzing envelope sender, from header, number of envelope recipients
 sub check_phishfrom {
 	my ($mailfrom,$rcptto,$from) = @_;
@@ -352,6 +316,7 @@ sub check_phishhook {
 	warn "$logtag: ...this_login = $this_tai ($this_gentime) $this_unixtime $this_ip $this_country\n" if ($verbose > 1);
 	
 	# Add to the loggable log summary for next time
+	$logsum{ipaddr} = $ipaddr;
 	$logsum{country} = $this_country;
 	
 	# Phish logic.  Two tests.  Both tests overlap where they can up to this 
@@ -493,7 +458,7 @@ sub check_phishhook {
 			
 			# Sanity, we won't allow snagging on just one or two countries period
 			if ($conf->val('phishhook','country_count') < 3) {
-				warn "$logtag: ...country_count configuration not sane, too few hops\n" if ($verbose > 1);
+				warn "$logtag: ...country_count configuration not sane with too few hops, passed\n" if ($verbose > 1);
 				last;	
 			}
 			
@@ -575,6 +540,41 @@ sub check_phishhook {
 			}
 		}
 		warn "$logtag: ...country-count: ".scalar(@countries)." (".join(',',@countries).")\n" if ($verbose > 1);
+	}
+}
+
+# Ratelimit check analyzing envelope sender and number of recipients over interval
+sub check_ratelimit {
+	my ($mailfrom) = @_;
+	if (!$mailfrom) { return; }
+	warn "$logtag: Check ratelimit: mailfrom $mailfrom\n" if $verbose;
+	
+	# figure out the beginning interval time after which we care about
+	my $tbegin = time() - $conf->val('ratelimit','interval');
+	my $tbegin_tai = unixtai64n($tbegin);
+	print STDERR "$logtag: ...time_begin = $tbegin_tai (".tai64nlocal($tbegin_tai).") $tbegin\n" if ($verbose > 1);
+	
+	my $maxrcptto = $conf->val('ratelimit','maxrcptto');
+	my %skims = mine_qmail_skim_log("mailfrom=>$mailfrom",$tbegin_tai);
+	
+	# iterate over logs grabbing only those within interval
+	my $rcpttos;
+	foreach my $tai (reverse(sort(keys(%skims)))) {
+		my $tunix = tai2unix($tai);
+		print STDERR "$logtag: ...prev_message = $tai (".tai64nlocal($tai).") $tunix $skims{$tai}{mailfrom} $skims{$tai}{rcptto}\n" if ($verbose > 1);
+		$rcpttos += $skims{$tai}{rcptto};
+	}
+	
+	$logsum{ratelimit} = $rcpttos;
+	
+	# determine fate
+	if ($rcpttos > $conf->val('ratelimit','maxrcptto')) {
+		$checks_failed{ratelimit} = 1;
+		if ($checks_dryrun{ratelimit}) {
+			warn "$logtag: BLOCK DRYRUN ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n";
+		} else {
+			bail("$logtag: BLOCK ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n",111);
+		}
 	}
 }
 
