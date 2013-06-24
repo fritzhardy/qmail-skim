@@ -145,9 +145,9 @@ sub check_body {
 		if ($body =~ m/$bchk/) {
 			$checks_failed{body} = 1;
 			if ($checks_dryrun{body}) {
-				warn "$logtag: BLOCK_DRYRUN body =~ $bchk (#4.3.0)\n";
+				warn "$logtag: BLOCK_DRYRUN body: body =~ $bchk (#4.3.0)\n";
 			} else {
-				bail("$logtag: BLOCK body =~ $bchk (#4.3.0)\n",111);
+				bail("$logtag: BLOCK body: body =~ $bchk (#4.3.0)\n",111);
 			}
 		}
 	}
@@ -165,9 +165,9 @@ sub check_envelope {
 			if ($mailfrom =~ m/$mfchk/) {
 				$checks_failed{envelope} = 1;
 				if ($checks_dryrun{envelope}) {
-					warn "$logtag: BLOCK_DRYRUN envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n";	
+					warn "$logtag: BLOCK_DRYRUN envelope: mailfrom $mailfrom =~ $mfchk (#4.3.0)\n";	
 				} else {
-					bail("$logtag: BLOCK envelope mailfrom $mailfrom =~ $mfchk (#4.3.0)\n",111);
+					bail("$logtag: BLOCK envelope: mailfrom $mailfrom =~ $mfchk (#4.3.0)\n",111);
 				}
 			}
 		}
@@ -175,9 +175,9 @@ sub check_envelope {
 			if ($mailfrom eq $mfchk) {
 				$checks_failed{envelope} = 1;
 				if ($checks_dryrun{envelope}) {
-					warn "$logtag: BLOCK_DRYRUN envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n";
+					warn "$logtag: BLOCK_DRYRUN envelope: mailfrom $mailfrom == $mfchk (#4.3.0)\n";
 				} else {
-					bail("$logtag: BLOCK envelope mailfrom $mailfrom == $mfchk (#4.3.0)\n",111);
+					bail("$logtag: BLOCK envelope: mailfrom $mailfrom == $mfchk (#4.3.0)\n",111);
 				}
 			}	
 		}
@@ -212,9 +212,9 @@ sub check_headers {
 					if ($hval =~ m/$hchk/) {	# match
 						$checks_failed{headers} = 1;
 						if ($checks_dryrun{headers}) {
-							warn "$logtag: BLOCK_DRYRUN header $h $hval =~ $hchk (#4.3.0)\n";
+							warn "$logtag: BLOCK_DRYRUN header: $h $hval =~ $hchk (#4.3.0)\n";
 						} else {
-							bail("$logtag: BLOCK header $h $hval =~ $hchk (#4.3.0)\n",111);
+							bail("$logtag: BLOCK header: $h $hval =~ $hchk (#4.3.0)\n",111);
 						}
 					}
 				}
@@ -225,9 +225,9 @@ sub check_headers {
 					if ($hval eq $hchk) {
 						$checks_failed{headers} = 1;
 						if ($checks_dryrun{headers}) {
-							warn "$logtag: BLOCK_DRYRUN header $h $hval == $hchk (#4.3.0)\n";
+							warn "$logtag: BLOCK_DRYRUN header: $h $hval == $hchk (#4.3.0)\n";
 						} else {
-							bail("$logtag: BLOCK header $h $hval == $hchk (#4.3.0)\n",111);
+							bail("$logtag: BLOCK header: $h $hval == $hchk (#4.3.0)\n",111);
 						}
 					}
 				}
@@ -258,7 +258,7 @@ sub check_phishfrom {
 	# determine fate
 	if (($authuser ne $from_sane) && ($numrcpttos > $conf->val('phishfrom','maxrcptto'))) {
 		$checks_failed{phishfrom} = 1;
-		my $msg = "authuser $authuser != $mailfrom and > ".$conf->val('phishfrom','maxrcptto')." recipients";
+		my $msg = "authuser $authuser not equal to $mailfrom and greater than ".$conf->val('phishfrom','maxrcptto')." recipients";
 		if ($checks_dryrun{phishfrom}) {
 			warn "$logtag: SNAG_DRYRUN phishfrom: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
 			warn "$logtag: BLOCK_DRYRUN phishfrom: $msg (#4.3.0)\n";
@@ -438,17 +438,17 @@ sub check_phishhook {
 			#  - block this session
 			
 			$checks_failed{phishhook} = 1;
-			my $msg = "country-hop from $last_country ($last_ip) at $last_gentime to $this_country ($this_ip) at $this_gentime in $time_diff"."s ($hours_diff"."h)";
+			my $msg = "authuser $user country-hop from $last_country ($last_ip) at $last_gentime to $this_country ($this_ip) at $this_gentime in $time_diff"."s ($hours_diff"."h)";
 			if ($checks_dryrun{phishhook}) {
-				warn "$logtag: SNAG_DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
-				warn "$logtag: BLOCK_DRYRUN phishhook user $user: $msg (#4.3.0)\n";
+				warn "$logtag: SNAG_DRYRUN phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
+				warn "$logtag: BLOCK_DRYRUN phishhook: $msg (#4.3.0)\n";
 			}
 			else {
 				# snag the user
 				my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
 				$exitval >>= 8;
-				warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval\n";
-				bail("$logtag: BLOCK phishhook user $user: $msg (#4.3.0)\n",111);
+				warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval\n";
+				bail("$logtag: BLOCK phishhook: $msg (#4.3.0)\n",111);
 			}
 		}
 	}
@@ -545,16 +545,16 @@ sub check_phishhook {
 			if (scalar(@countries) >= $conf->val('phishhook','country_count')) {
 				my $country_count = scalar(@countries);
 				$checks_failed{phishhook} = 1;
-				my $msg = "country-count $country_count (".join(',',@countries).") exceeds limit ".$conf->val('phishhook','country_count')." within interval ".$conf->val('phishhook','interval')."s";
+				my $msg = "authuser $user country-count $country_count (".join(',',@countries).") exceeds limit ".$conf->val('phishhook','country_count')." within interval ".$conf->val('phishhook','interval')."s";
 				if ($checks_dryrun{phishhook}) {
-					warn "$logtag: SNAG_DRYRUN phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
-					warn "$logtag: BLOCK_DRYRUN phishhook user $user: $msg (#4.3.0)\n";
+					warn "$logtag: SNAG_DRYRUN phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
+					warn "$logtag: BLOCK_DRYRUN phishhook: $msg (#4.3.0)\n";
 				} else {
 					# snag the user
 					my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
 					$exitval >>= 8;
-					warn "$logtag: SNAG phishhook user $user: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval\n";
-					bail("$logtag: BLOCK phishhook user $user: $msg (#4.3.0)\n",111);
+					warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval\n";
+					bail("$logtag: BLOCK phishhook: $msg (#4.3.0)\n",111);
 				}
 			}
 		}
@@ -593,16 +593,16 @@ sub check_phishlimit {
 	# determine fate
 	if ($rcpttos > $conf->val('phishlimit','maxrcptto')) {
 		$checks_failed{phishlimit} = 1;
-		my $msg = "rcpttos greater than ".$conf->val('phishlimit','maxrcptto')." in interval ".$conf->val('phishlimit','interval')."s";
+		my $msg = "authuser $authuser rcpttos $rcpttos greater than ".$conf->val('phishlimit','maxrcptto')." in interval ".$conf->val('phishlimit','interval')."s";
 		if ($checks_dryrun{phishlimit}) {
-			warn "$logtag: SNAG_DRYRUN phishlimit authuser $authuser: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
-			warn "$logtag: BLOCK_DRYRUN phishlimit authuser $authuser: $msg (#4.3.0)\n";
+			warn "$logtag: SNAG_DRYRUN phishlimit: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
+			warn "$logtag: BLOCK_DRYRUN phishlimit: $msg (#4.3.0)\n";
 		} else {
 			# snag the user
 			my $exitval = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
 			$exitval >>= 8;
-			warn "$logtag: SNAG phishlimit authuser $authuser: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval\n";
-			bail("$logtag: BLOCK phishlimit authuser $authuser: $msg (#4.3.0)\n",111);
+			warn "$logtag: SNAG phishlimit: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval\n";
+			bail("$logtag: BLOCK phishlimit: $msg (#4.3.0)\n",111);
 		}
 	}
 }
@@ -635,9 +635,9 @@ sub check_ratelimit {
 	if ($rcpttos > $conf->val('ratelimit','maxrcptto')) {
 		$checks_failed{ratelimit} = 1;
 		if ($checks_dryrun{ratelimit}) {
-			warn "$logtag: BLOCK_DRYRUN ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n";
+			warn "$logtag: BLOCK_DRYRUN ratelimit: mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n";
 		} else {
-			bail("$logtag: BLOCK ratelimit mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n",111);
+			bail("$logtag: BLOCK ratelimit: mailfrom $mailfrom rcpttos $rcpttos greater than ".$conf->val('ratelimit','maxrcptto')." in interval ".$conf->val('ratelimit','interval')."s (#4.3.0)\n",111);
 		}
 	}
 }
