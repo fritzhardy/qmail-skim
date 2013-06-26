@@ -105,9 +105,9 @@ main: {
 	$logsum{from} =~ s/\s/_/g;
 	
 	# run checks and potentially produce more log summary hits
-	check_phishhook($authuser,$ipaddr) if $checks_enabled{phishhook};
-	check_phishfrom($authuser,$mailfrom,$rcptto,$ipaddr) if $checks_enabled{phishfrom};
-	check_phishlimit($authuser,$ipaddr) if $checks_enabled{phishlimit};
+	check_phishhook($authuser,$ipaddr,$email->header("From")) if $checks_enabled{phishhook};
+	check_phishfrom($authuser,$mailfrom,$rcptto,$ipaddr,$email->header("From")) if $checks_enabled{phishfrom};
+	check_phishlimit($authuser,$ipaddr,$email->header("From")) if $checks_enabled{phishlimit};
 	check_ratelimit($mailfrom) if $checks_enabled{ratelimit};
 	check_envelope($mailfrom,$rcptto) if ($checks_enabled{envelope});
 	check_headers($email,\@headers) if ($checks_enabled{headers});
@@ -238,11 +238,12 @@ sub check_headers {
 
 # Phishfrom check analyzing envelope sender, from header, number of envelope recipients
 sub check_phishfrom {
-	my ($authuser,$mailfrom,$rcptto,$ipaddr) = @_;
+	my ($authuser,$mailfrom,$rcptto,$ipaddr,$from) = @_;
 	if (!$authuser) { return; }
 	if (!$mailfrom) { return; }
 	if (!$rcptto) { return; }
 	if (!$ipaddr) { return; }
+	if (!$from) { return; }
 	
 	my $numrcpttos = scalar(split(/,/,$rcptto));
 	
@@ -261,12 +262,18 @@ sub check_phishfrom {
 		my $msg = "authuser $authuser not equal to $mailfrom and greater than ".$conf->val('phishfrom','maxrcptto')." recipients";
 		if ($checks_dryrun{phishfrom}) {
 			warn "$logtag: SNAG_DRYRUN phishfrom: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
+			warn "$logtag: QMQCLEAR_DRYRUN phishfrom: /opt/bin/qmqclear.sh 'From: $from'\n";
 			warn "$logtag: BLOCK_DRYRUN phishfrom: $msg (#4.3.0)\n";
 		} else {
 			# snag the user
-			my $exitval = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
-			$exitval >>= 8;
-			warn "$logtag: SNAG phishfrom: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval\n";
+			my $exitval1 = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
+			$exitval1 >>= 8;
+			warn "$logtag: SNAG phishfrom: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval1\n";
+			# qmqclear
+			my $exitval2 = system("/opt/bin/qmqclear.sh 'From: $from'");
+			$exitval2 >>= 8;
+			warn "$logtag: QMQCLEAR phishfrom: /opt/bin/qmqclear.sh 'From: $from': $exitval2\n";
+			# bail
 			bail("$logtag: BLOCK phishfrom: $msg (#4.3.0)\n",111);
 		}
 	}
@@ -274,10 +281,11 @@ sub check_phishfrom {
 
 # Phishhook check analyzing country and time of last login
 sub check_phishhook {
-	my ($user,$ipaddr) = @_;
+	my ($user,$ipaddr,$from) = @_;
 	warn "$logtag: Check phishhook: authuser $user\n" if $verbose;
 	if (!$user) { return; }
 	if (!$ipaddr) { return; }
+	if (!$from) { return; }
 	
 	# Used below in checks to exclude current domestic logins and to 
 	# exclude foreign to foreign hops as travellers
@@ -441,13 +449,19 @@ sub check_phishhook {
 			my $msg = "authuser $user country-hop from $last_country ($last_ip) at $last_gentime to $this_country ($this_ip) at $this_gentime in $time_diff"."s ($hours_diff"."h)";
 			if ($checks_dryrun{phishhook}) {
 				warn "$logtag: SNAG_DRYRUN phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
+				warn "$logtag: QMQCLEAR_DRYRUN phishhook: /opt/bin/qmqclear.sh 'From: $from'\n";
 				warn "$logtag: BLOCK_DRYRUN phishhook: $msg (#4.3.0)\n";
 			}
 			else {
 				# snag the user
-				my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
-				$exitval >>= 8;
-				warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval\n";
+				my $exitval1 = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
+				$exitval1 >>= 8;
+				warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval1\n";
+				# qmqclear
+				my $exitval2 = system("/opt/bin/qmqclear.sh 'From: $from'");
+				$exitval2 >>= 8;
+				warn "$logtag: QMQCLEAR phishook: /opt/bin/qmqclear.sh 'From: $from': $exitval2\n";
+				# bail
 				bail("$logtag: BLOCK phishhook: $msg (#4.3.0)\n",111);
 			}
 		}
@@ -548,12 +562,18 @@ sub check_phishhook {
 				my $msg = "authuser $user country-count $country_count (".join(',',@countries).") exceeds limit ".$conf->val('phishhook','country_count')." within interval ".$conf->val('phishhook','interval')."s";
 				if ($checks_dryrun{phishhook}) {
 					warn "$logtag: SNAG_DRYRUN phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
+					warn "$logtag: QMQCLEAR_DRYRUN phishhook: /opt/bin/qmqclear.sh 'From: $from'\n";
 					warn "$logtag: BLOCK_DRYRUN phishhook: $msg (#4.3.0)\n";
 				} else {
 					# snag the user
-					my $exitval = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
-					$exitval >>= 8;
-					warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval\n";
+					my $exitval1 = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
+					$exitval1 >>= 8;
+					warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval1\n";
+					# qmqclear
+					my $exitval2 = system("/opt/bin/qmqclear.sh 'From: $from'");
+					$exitval2 >>= 8;
+					warn "$logtag: QMQCLEAR phishook: /opt/bin/qmqclear.sh 'From: $from': $exitval2\n";
+					# bail
 					bail("$logtag: BLOCK phishhook: $msg (#4.3.0)\n",111);
 				}
 			}
@@ -566,9 +586,10 @@ sub check_phishhook {
 # NOTE: The number of rcpttos in the current session does not count against us, 
 # only past sessions, protecting against a legit, infrequent, one big send.
 sub check_phishlimit {
-	my ($authuser,$ipaddr) = @_;
+	my ($authuser,$ipaddr,$from) = @_;
 	if (!$authuser) { return; }
 	if (!$ipaddr) { return; }
+	if (!$from) { return; }
 	
 	warn "$logtag: Check phishlimit: authuser $authuser\n" if $verbose;
 	
@@ -596,12 +617,18 @@ sub check_phishlimit {
 		my $msg = "authuser $authuser rcpttos $rcpttos greater than ".$conf->val('phishlimit','maxrcptto')." in interval ".$conf->val('phishlimit','interval')."s";
 		if ($checks_dryrun{phishlimit}) {
 			warn "$logtag: SNAG_DRYRUN phishlimit: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
+			warn "$logtag: QMQCLEAR_DRYRUN phishlimit: /opt/bin/qmqclear.sh 'From: $from'\n";
 			warn "$logtag: BLOCK_DRYRUN phishlimit: $msg (#4.3.0)\n";
 		} else {
 			# snag the user
-			my $exitval = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
-			$exitval >>= 8;
-			warn "$logtag: SNAG phishlimit: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval\n";
+			my $exitval1 = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
+			$exitval1 >>= 8;
+			warn "$logtag: SNAG phishlimit: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval1\n";
+			# qmqclear
+			my $exitval2 = system("/opt/bin/qmqclear.sh 'From: $from'");
+			$exitval2 >>= 8;
+			warn "$logtag: QMQCLEAR_DRYRUN phishlimit: /opt/bin/qmqclear.sh 'From: $from': $exitval2\n";
+			# bail
 			bail("$logtag: BLOCK phishlimit: $msg (#4.3.0)\n",111);
 		}
 	}
