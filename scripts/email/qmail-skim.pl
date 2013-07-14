@@ -8,9 +8,8 @@
 # 127.:allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl",QMAILSKIMCONF="/etc/qmail-skim-test.conf"
 # :allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl"
 #
-# example sudoers for qmail queue operations as in check_phishhook qmqclear:
-# #Defaults    requiretty
-# qmaild ALL=(ALL) NOPASSWD: /opt/bin/qmqclear.sh
+# note that check_phishXXX checks hardcoded to execute external script 
+# phishhook_snag.pl may require setuid or sudo bits set on or within that script
 
 use strict;
 use Email::Simple;
@@ -117,8 +116,8 @@ main: {
 	check_headers($email,\@headers) if ($checks_enabled{headers});
 	check_body($body) if ($checks_enabled{body});
 	
-	warn "$logtag: real uid $<\n";
-	warn "$logtag: effective uid $>\n";
+	#warn "$logtag: real uid $<\n";
+	#warn "$logtag: effective uid $>\n";
 	
 	# queue it up
 	$logsum{fate} = 'pass';
@@ -268,18 +267,13 @@ sub check_phishfrom {
 		$checks_failed{phishfrom} = 1;
 		my $msg = "authuser $authuser not equal to $mailfrom and greater than ".$conf->val('phishfrom','maxrcptto')." recipients";
 		if ($checks_dryrun{phishfrom}) {
-			warn "$logtag: SNAG_DRYRUN phishfrom: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
-			warn "$logtag: QMQCLEAR_DRYRUN phishfrom: sudo /opt/bin/qmqclear.sh 'From: $from'\n";
+			warn "$logtag: SNAG_DRYRUN phishfrom: /opt/bin/phishhook_snag.pl --qmqclear='$authuser)' $authuser $ipaddr $msg\n";
 			warn "$logtag: BLOCK_DRYRUN phishfrom: $msg (#4.3.0)\n";
 		} else {
 			# snag the user
-			my $exitval1 = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
+			my $exitval1 = system("/opt/bin/phishhook_snag.pl --qmqclear='$authuser)' $authuser $ipaddr '$msg'");
 			$exitval1 >>= 8;
-			warn "$logtag: SNAG phishfrom: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval1\n";
-			# qmqclear
-			my $exitval2 = system("sudo","/opt/bin/qmqclear.sh 'From: $from'");
-			$exitval2 >>= 8;
-			warn "$logtag: QMQCLEAR phishfrom: sudo /opt/bin/qmqclear.sh 'From: $from': $exitval2\n";
+			warn "$logtag: SNAG phishfrom: /opt/bin/phishhook_snag.pl --qmqclear='$authuser)' $authuser $ipaddr $msg: $exitval1\n";
 			# bail
 			bail("$logtag: BLOCK phishfrom: $msg (#4.3.0)\n",111);
 		}
@@ -455,19 +449,14 @@ sub check_phishhook {
 			$checks_failed{phishhook} = 1;
 			my $msg = "authuser $user country-hop from $last_country ($last_ip) at $last_gentime to $this_country ($this_ip) at $this_gentime in $time_diff"."s ($hours_diff"."h)";
 			if ($checks_dryrun{phishhook}) {
-				warn "$logtag: SNAG_DRYRUN phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
-				warn "$logtag: QMQCLEAR_DRYRUN phishhook: sudo /opt/bin/qmqclear.sh 'From: $from'\n";
+				warn "$logtag: SNAG_DRYRUN phishhook: /opt/bin/phishhook_snag.pl --qmqclear='$user)' $user $this_ip $msg\n";
 				warn "$logtag: BLOCK_DRYRUN phishhook: $msg (#4.3.0)\n";
 			}
 			else {
 				# snag the user
-				my $exitval1 = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
+				my $exitval1 = system("/opt/bin/phishhook_snag.pl --qmqclear='$user)' $user $this_ip '$msg'");
 				$exitval1 >>= 8;
-				warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval1\n";
-				# qmqclear
-				my $exitval2 = system("sudo","/opt/bin/qmqclear.sh 'From: $from'");
-				$exitval2 >>= 8;
-				warn "$logtag: QMQCLEAR phishhook: sudo /opt/bin/qmqclear.sh 'From: $from': $exitval2\n";
+				warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl --qmqclear='$user)' $user $this_ip $msg: $exitval1\n";
 				# bail
 				bail("$logtag: BLOCK phishhook: $msg (#4.3.0)\n",111);
 			}
@@ -568,18 +557,13 @@ sub check_phishhook {
 				$checks_failed{phishhook} = 1;
 				my $msg = "authuser $user country-count $country_count (".join(',',@countries).") exceeds limit ".$conf->val('phishhook','country_count')." within interval ".$conf->val('phishhook','interval')."s";
 				if ($checks_dryrun{phishhook}) {
-					warn "$logtag: SNAG_DRYRUN phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg\n";
-					warn "$logtag: QMQCLEAR_DRYRUN phishhook: sudo /opt/bin/qmqclear.sh 'From: $from'\n";
+					warn "$logtag: SNAG_DRYRUN phishhook: /opt/bin/phishhook_snag.pl --qmqclear='$user)' $user $this_ip $msg\n";
 					warn "$logtag: BLOCK_DRYRUN phishhook: $msg (#4.3.0)\n";
 				} else {
 					# snag the user
-					my $exitval1 = system("/opt/bin/phishhook_snag.pl $user $this_ip '$msg'");
+					my $exitval1 = system("/opt/bin/phishhook_snag.pl --qmqclear='$user)' $user $this_ip '$msg'");
 					$exitval1 >>= 8;
-					warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl $user $this_ip $msg: $exitval1\n";
-					# qmqclear
-					my $exitval2 = system("/opt/bin/qmqclear.sh 'From: $from'");
-					$exitval2 >>= 8;
-					warn "$logtag: QMQCLEAR phishhook: sudo /opt/bin/qmqclear.sh 'From: $from': $exitval2\n";
+					warn "$logtag: SNAG phishhook: /opt/bin/phishhook_snag.pl --qmqclear='$user)' $user $this_ip $msg: $exitval1\n";
 					# bail
 					bail("$logtag: BLOCK phishhook: $msg (#4.3.0)\n",111);
 				}
@@ -623,18 +607,13 @@ sub check_phishlimit {
 		$checks_failed{phishlimit} = 1;
 		my $msg = "authuser $authuser rcpttos $rcpttos greater than ".$conf->val('phishlimit','maxrcptto')." in interval ".$conf->val('phishlimit','interval')."s";
 		if ($checks_dryrun{phishlimit}) {
-			warn "$logtag: SNAG_DRYRUN phishlimit: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg\n";
-			warn "$logtag: QMQCLEAR_DRYRUN phishlimit: sudo /opt/bin/qmqclear.sh 'From: $from'\n";
+			warn "$logtag: SNAG_DRYRUN phishlimit: /opt/bin/phishhook_snag.pl --qmqclear='$authuser)' $authuser $ipaddr $msg\n";
 			warn "$logtag: BLOCK_DRYRUN phishlimit: $msg (#4.3.0)\n";
 		} else {
 			# snag the user
-			my $exitval1 = system("/opt/bin/phishhook_snag.pl $authuser $ipaddr '$msg'");
+			my $exitval1 = system("/opt/bin/phishhook_snag.pl --qmqclear='$authuser)' $authuser $ipaddr '$msg'");
 			$exitval1 >>= 8;
-			warn "$logtag: SNAG phishlimit: /opt/bin/phishhook_snag.pl $authuser $ipaddr $msg: $exitval1\n";
-			# qmqclear
-			my $exitval2 = system("sudo","/opt/bin/qmqclear.sh 'From: $from'");
-			$exitval2 >>= 8;
-			warn "$logtag: QMQCLEAR phishlimit: sudo /opt/bin/qmqclear.sh 'From: $from': $exitval2\n";
+			warn "$logtag: SNAG phishlimit: /opt/bin/phishhook_snag.pl --qmqclear='$authuser)' $authuser $ipaddr $msg: $exitval1\n";
 			# bail
 			bail("$logtag: BLOCK phishlimit: $msg (#4.3.0)\n",111);
 		}
