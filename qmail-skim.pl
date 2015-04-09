@@ -1,15 +1,30 @@
 #!/usr/bin/perl
 # qmail-skim.pl
-# Jan 7, 2012 7:52:11 PM
-# jeff hardy (hardyjm at potsdam dot edu)
-# qmail-skim.pl is designed to skim through mails looking for problems before queueing them
+# ctime 20120107075211
+# jeff hardy (jeff at fritzhardy dot com)
+# qmail-skim.pl is a qmail queue augmentation designed to 
+# skim messages looking for problems before queueing them
 #
-# example tcp.smtp on qmail with qmailqueue patch:
-# 127.:allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl",QMAILSKIMCONF="/etc/qmail-skim-test.conf"
-# :allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl"
+# #############
+# Copyright (C) 2015, Jeff Hardy <hardyjm@potsdam.edu>
 #
-# note that check_phishXXX checks hardcoded to execute external script 
-# phishhook_snag.pl may require setuid or sudo bits set on or within that script
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
+# USA.
+# #############
+#
+# see 'perldoc ./qmail-skim.pl'
 
 use strict;
 use Email::Simple;
@@ -1002,3 +1017,225 @@ sub qmail_queue {
     	bail("$logtag: Unable to close pipe to $qmail_queue [$exitval] (#4.3.0): $!\n",$exitval);
 	}
 }
+
+=head1 NAME
+
+qmail-skim
+
+=head1 SYNOPSIS
+
+Example tcpserver configuration on qmail with qmailqueue patch:
+
+ 127.:allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl",QMAILSKIMCONF="/etc/qmail-skim-local.conf"
+ :allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl"
+
+Note that check_phishXXX checks hardcoded to execute external script.  Said 
+script "phishhook_snag.pl" may require setuid or sudo bits set on or within 
+that script.
+
+=head1 DESCRIPTION
+
+Qmail-skim is a qmail-queue augmentation designed to subject messages to 
+user-configurable tests before queuing, including simple envelope, header, 
+and body pattern checks.  Additionally, qmail-skim can determine the fate of a 
+message based on prior envelope sender or auth-user behavior, allowing for 
+various rate-limiting options, as well as specialized phish-handling options by 
+integration with third-party script.
+
+Conventions for the installation and setup of qmail and associated software 
+will assume a standard lifewithqmail.org setup.
+
+=head1 INSTALLATION
+
+Script requirements are as follows:
+
+ Email::Simple
+ Config::IniFiles
+ Time::TAI64
+ Geo::IP
+
+Installation consists of copying the script to a system location such as 
+/opt/bin and ensuring the above perl modules are in place.
+
+Also, qmail itself must be patched with Bruce Guenter's QMAILQUEUE patch 
+(common to most modern qmail setups), which allows for specifying an alternate  
+qmail-queue mechanism through environment variable.
+
+=head1 ENVIRONMENT
+
+Environment variable QMAILQUEUE must be set to the full path of alternate qmail 
+queue.  Additionally, qmail-skim introduces its own environment variable 
+QMAILSKIMCONF specifying an alternate location for configuration, with default 
+/etc/qmail-skim.conf if not specified.  As with most things qmail, environment 
+variables are specified in tcpserver configuration.  For example:
+
+ 127.:allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl",QMAILSKIMCONF="/etc/qmail-skim-local.conf"
+ 192.168.:allow,RELAYCLIENT="",QMAILQUEUE="/opt/bin/qmail-skim.pl",QMAILSKIMCONF="/etc/qmail-skim-lan.conf"
+ :allow,QMAILQUEUE="/opt/bin/qmail-skim.pl"
+
+This example shows a specific localhost configuration, another configuration 
+for hosts on the lan, and the last unspecified, therefore using default.
+
+=head1 CONFIGURATION
+
+Qmail-skim requires configuration in ini-file format, divided into sections 
+corresponding to each of the tests qmail-skim is capable of conducting, and a 
+global section for general configuration.  The following is based on 
+configuration used in production:
+
+ [global]
+ verbose=2
+ enable=phishhook,phishlimit,phishfrom,envelope,headers,body
+ dryrun=phishfrom,envelope,headers,body
+ webmail_aware=1
+ 
+ [phishhook]
+ interval=28800
+ safe_countries=A1,A2,US,MX,CA,PR
+ safe_users=user1,user2,user3
+ country_hop=1
+ country_count=4
+ test=phishphood,@4000000051427e313ac0850c,189.38.86.41,skimtest
+ 
+ [phishfrom]
+ maxrcptto=30
+ 
+ [phishlimit]
+ interval=60
+ maxrcptto=100
+ 
+ [ratelimit]
+ interval=500
+ maxrcptto=50
+ 
+ [envelope]
+ mailfrom=baduser@example.com
+ mailfrom=~baduser2
+ rcptto=gullible@localdom.com
+ rcptto=~gullible2
+ 
+ [headers]
+ from=baduser
+ subject=testing
+ subject=~spammy
+ received=~example.com
+ x-mailer=~spammailer
+ 
+ [body]
+ body=badidea
+
+Global variable enable most importantly specifies which checks to run.  Any 
+tests additionally listed beneath dryrun will still run and provide full 
+logging as normal, but will not block messages when tripped, a useful mechanism 
+for testing configuration before making live.
+
+When webmail_aware=1, qmail-skim will attempt to discern the smtp-authenticated 
+user from any special Received headers that may exist (currently Squirrelmail 
+is supported), if not already determined from environment SMTP_AUTH_USER.  
+Finally, maximum verbose=4.
+
+=head1 CHECKS
+
+=over 4
+
+=item B<phishhook>
+
+Phishhook is the most complex of the available checks, comprising two tests.  
+Both examine the sending ip address of the smtp-authenticated user to determine 
+country-of-origin, and compare it with prior sending behavior.
+
+The first test (enabled when country_hop=1) is tripped if last_login was in the 
+safe_countries list, and this login is outside the list, in less time than 
+specified by the interval value.  Example case: A user logs in from the US, and 
+then Australia, a few minutes apart.  A likely sign of compromised account.
+
+The second test (enabled when country_count>0), is tripped if the user has 
+logged in from country_count number of countries (excluding safe_countries) 
+within the interval.  Example case: A user logs in from four countries within 
+one hour.  Again, a potential sign of compromised account.
+
+Upon failing the check, the message is blocked with temporary failure.  
+Additionally, the script is currently hardcoded to execute 
+/opt/bin/phishhook_snag.pl with arguments including the username and ip 
+address.  In practice, this has been used to scramble account passwords, clear 
+queues, set firewall rules, etc.  Care, coding, and testing would be necessary 
+before implementation.
+
+=item B<phishfrom>
+
+Phishfrom compares the smtp-authenticated username with the envelope sender 
+address, and if there is a mismatch, and the number of recipients exceeds 
+maxrcptto=X, the message is blocked.  Example case: A user logs in with 
+username bob, but sends email with envelope sender awesomedeals@spamdomain.com 
+(rather than bob@example.com), to 48 recipients.  A likely sign of compromised 
+account.
+
+Upon failing the check, the message is blocked with temporary failure.  
+Additionally, the script is currently hardcoded to execute 
+/opt/bin/phishhook_snag.pl with arguments including the username and ip 
+address.  In practice, this has been used to scramble account passwords, clear 
+queues, set firewall rules, etc.  Care, coding, and testing would be necessary 
+before implementation.
+
+=item B<phishlimit>
+
+Phislimit tallies up the number of recipients to which the smtp-authenticated 
+user has sent messages, and if that number exceeds maxrcptto=X within the 
+defined interval, the message is blocked.  The number of rcpttos in the current 
+session does not count against the user, providing some protection from 
+flagging one legitimate big send.  Example case: A user logs in and prior 
+history across any number of sessions shows the number of recipients exceeds 
+the limit.
+
+Upon failing the check, the message is blocked with temporary failure.  
+Additionally, the script is currently hardcoded to execute 
+/opt/bin/phishhook_snag.pl with arguments including the username and ip 
+address.  In practice, this has been used to scramble account passwords, clear 
+queues, set firewall rules, etc.  Care, coding, and testing would be necessary 
+before implementation.
+
+=item B<ratelimit>
+
+Ratelimit tallies up the number of recipients to which the envelope sender has 
+sent messages, and if that number exceeds maxrcptto=X within the defined 
+interval, the message is blocked with temporary failure.
+
+=item B<envelope>
+
+Envelope checks include checks against envelope sender and recipients, matching 
+against user-defined variables mailfrom and rcptto.  Values can be exact match 
+(=) or a regex (=~).
+
+=item B<headers>
+
+Envelope checks include checks against any headers, matching against 
+user-defined variables of like name (all lowercased).  Values can be exact 
+match (=) or a regex (=~).
+
+=item B<body>
+
+Body checks match the entire body against user-defined body variable, with 
+values treated as regex match.  Given that message bodies can be large and 
+varied, this check should be used with caution.
+
+=head1 TROUBLESHOOTING
+
+Watch the qmail-smtp logs for signs of trouble.
+
+ tcpserver: pid 23904 from 192.168.1.165
+ tcpserver: ok 23904 vulcan.everthink.net:192.168.1.13:25 fritzlap6:192.168.1.165::53346
+ Can't locate Geo/IP.pm in @INC (you may need to install the Geo::IP module) (@INC contains: /usr/local/lib/perl5 /usr/local/share/perl5 /usr/lib/perl5/vendor_perl /usr/share/perl5/vendor_perl /usr/lib/perl5 /usr/share/perl5 .) at /opt/bin/qmail-skim.pl line 18.
+ BEGIN failed--compilation aborted at /opt/bin/qmail-skim.pl line 18.
+ tcpserver: end 23904 status 256
+
+ tcpserver: pid 23923 from 192.168.1.165
+ tcpserver: ok 23923 vulcan.everthink.net:192.168.1.13:25 fritzlap6:192.168.1.165::53354
+ Out of memory!
+ Out of memory!
+ tcpserver: end 23923 status 256
+
+ tcpserver: pid 24115 from 192.168.1.165
+ tcpserver: ok 24115 vulcan.everthink.net:192.168.1.13:25 fritzlap6:192.168.1.165::53379
+ qmail-skim.pl[24116]: No configuration found and no checks conducted
+ qmail-skim.pl[24116]: Queueing message with /var/qmail/bin/qmail-queue
+ tcpserver: end 24115 status 256
