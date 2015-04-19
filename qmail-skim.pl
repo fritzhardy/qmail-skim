@@ -1063,8 +1063,8 @@ qmail-queue mechanism through environment variable.
 
 =head1 ENVIRONMENT
 
-Environment variable QMAILQUEUE must be set to the full path of alternate qmail 
-queue.  Additionally, qmail-skim introduces its own environment variable 
+Environment variable QMAILQUEUE must be set to the full path of the replacement 
+qmail-queue.  Additionally, qmail-skim introduces its own environment variable 
 QMAILSKIMCONF specifying an alternate location for configuration, with default 
 /etc/qmail-skim.conf if not specified.  As with most things qmail, environment 
 variables are specified in tcpserver configuration.  For example:
@@ -1124,8 +1124,8 @@ configuration used in production:
  [body]
  body=badidea
 
-Global variable enable most importantly specifies which checks to run.  Any 
-tests additionally listed beneath dryrun will still run and provide full 
+Global variable enable=list most importantly specifies which checks to run.  
+Any tests additionally listed beneath dryrun will still run and provide full 
 logging as normal, but will not block messages when tripped, a useful mechanism 
 for testing configuration before making live.
 
@@ -1218,9 +1218,62 @@ Body checks match the entire body against user-defined body variable, with
 values treated as regex match.  Given that message bodies can be large and 
 varied, this check should be used with caution.
 
+=back
+
+=head1 LOGGING AND DATABASE LIMITATIONS
+
+In short, logs as database.  As a qmail-queue replacement, qmail-skim is called 
+for every message the qmail instance receives.  A profile of the message is 
+constructed and serialized for storage in the log.  Any tests that examine 
+prior behavior (all phish tests, ratelimit) rely on these qmail-skim hits in 
+the logs to reconstruct previous message profiles.
+
+An example of such a (all-one-line) line from /var/log/qmail/smtpd/current:
+
+SKIM body=>1 fate=>pass from=>test1@example.com \
+headers=>6 ipaddr=>192.168.1.165 mailfrom=>test1@example.com rcptto=>1
+
+Only log lines beginning with 'SKIM' are targetted for reconstruction.  All 
+other qmail-skim logging is purely informational, meant for the administrator, 
+providing extra intelligence about messages or to aid in the configuration of 
+qmail-skim.
+
+Log storage is a bad idea.  Although this practice is quite simple, and has 
+been well-tested in small-to-medium production, it limits scale to single 
+mail-exchanger when phish tests are in use.  Things to consider are the extra 
+read and parse of logs with every message, as well as the potential for mangled 
+or mutated log entries to be parsed incorrectly.
+
+The perfect solution: document store.
+
+=head1 BLOCKING
+
+Should a message fail a check, qmail-skim will return 111, resulting in a  
+tempfail for sending clients.  A client will see something akin to the 
+following:
+
+ 451 qq temporary problem (#4.3.0)
+
+This is tracked in the logs thus:
+
+ BLOCK body: body =~ badidea (#4.3.0)
+ SKIM body=>1 checksfailed=>body fate=>block from=>test@example.com ...
+
+A tempfail is favored over a hard error.  Should we have a resource or 
+configuration problem, we err on a soft error to signal the sending side to 
+keep the message queued and to retry later.  Legitimate MTAs are likely to 
+respect that signal, while malicious MTAs will do what they will.
+
+The phish checks additionally call out to the phishhook_snag script when a 
+message is blocked.  These are really designed for the local population of 
+SMTP-Auth users, effecting a hard error by scrambling password, changing 
+firewall, etc, as determined by that script.  
+
 =head1 TROUBLESHOOTING
 
 Watch the qmail-smtp logs for signs of trouble.
+
+Missing modules:
 
  tcpserver: pid 23904 from 192.168.1.165
  tcpserver: ok 23904 vulcan.everthink.net:192.168.1.13:25 fritzlap6:192.168.1.165::53346
@@ -1228,11 +1281,15 @@ Watch the qmail-smtp logs for signs of trouble.
  BEGIN failed--compilation aborted at /opt/bin/qmail-skim.pl line 18.
  tcpserver: end 23904 status 256
 
+Out of memory, increase softlimit:
+
  tcpserver: pid 23923 from 192.168.1.165
  tcpserver: ok 23923 vulcan.everthink.net:192.168.1.13:25 fritzlap6:192.168.1.165::53354
  Out of memory!
  Out of memory!
  tcpserver: end 23923 status 256
+
+Missing configs:
 
  tcpserver: pid 24115 from 192.168.1.165
  tcpserver: ok 24115 vulcan.everthink.net:192.168.1.13:25 fritzlap6:192.168.1.165::53379
